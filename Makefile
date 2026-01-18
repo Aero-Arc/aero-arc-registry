@@ -5,7 +5,7 @@ SHELL := /bin/bash
 
 # Variables
 BINARY_NAME := aero-arc-registry
-MAIN_PKG := ./internal
+MAIN_PKG := ./cmd/aero-arc-registry/
 COVERAGE_DIR := coverage
 COVERAGE_FILE := $(COVERAGE_DIR)/coverage.out
 COVERAGE_HTML := $(COVERAGE_DIR)/coverage.html
