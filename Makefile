@@ -115,6 +115,19 @@ install-tools:
 	go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
 	@echo "Development tools installed"
 
+# Make local tls certs
+local-tls-certs:
+	@if [ -f ~/.aeroarc/local-certs/localhost.crt ] && [ -f ~/.aeroarc/local-certs/localhost.key ]; then \
+		echo "Local TLS certs already exist at ~/.aeroarc/local-certs."; \
+	else \
+		mkdir -p ~/.aeroarc/local-certs; \
+		openssl req -x509 -out ~/.aeroarc/local-certs/localhost.crt -keyout ~/.aeroarc/local-certs/localhost.key \
+			-newkey rsa:2048 -nodes -sha256 \
+			-subj '/CN=localhost' -extensions EXT -config <( \
+				printf "[dn]\nCN=localhost\n[req]\ndistinguished_name = dn\n[EXT]\nsubjectAltName=DNS:localhost\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth"); \
+		echo "Local TLS certs generated in ~/.aeroarc/local-certs."; \
+	fi
+
 # Security scan
 security:
 	@echo "Running security scan..."
