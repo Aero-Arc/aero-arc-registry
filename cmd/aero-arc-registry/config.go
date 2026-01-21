@@ -48,5 +48,5 @@ func buildConfigFromCLI(cmd *cli.Command) (*registry.Config, error) {
 		return nil, fmt.Errorf("%w: %s", ErrUnhandledBackend, registryConfig.Backend.Type)
 	}
 
-	return registryConfig, registryConfig.Validate()
+	return registryConfig, nil
 }

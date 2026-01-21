@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/makinje/aero-arc-registry/internal/registry"
@@ -80,11 +82,31 @@ var registryCmd = cli.Command{
 			Usage: "specified redis db to use",
 			Value: 0,
 		},
+		&cli.DurationFlag{
+			Name:  ShutDownTimeoutFlag,
+			Usage: "timeout that is enforced during a graceful shutdown",
+			Value: time.Second * 30,
+		},
 	},
 }
 
 func RunRegistry(ctx context.Context, cmd *cli.Command) error {
-	return nil
+	registryCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	cfg, err := buildConfigFromCLI(cmd)
+	if err != nil {
+		return err
+	}
+
+	aeroRegistry, err := registry.New(cfg)
+	if err != nil {
+		return err
+	}
+
+	shutdownTimeout := cmd.Duration(ShutDownTimeoutFlag)
+
+	return aeroRegistry.Run(registryCtx, shutdownTimeout)
 }
 
 func main() {

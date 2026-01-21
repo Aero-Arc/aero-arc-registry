@@ -15,4 +15,5 @@ const (
 	RedisUsernameFlag     = "redis-user"
 	RedisPasswordFlag     = "redis-password"
 	RedisDBFlag           = "redis-db"
+	ShutDownTimeoutFlag   = "shutdown-timeout"
 )
