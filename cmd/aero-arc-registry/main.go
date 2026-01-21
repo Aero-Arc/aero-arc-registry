@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/makinje/aero-arc-registry/internal/registry"
+	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
 	"github.com/urfave/cli/v3"
 )
 
@@ -99,7 +99,12 @@ func RunRegistry(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	aeroRegistry, err := registry.New(cfg)
+	backend, err := buildBackendFromConfig(cfg)
+	if err != nil {
+		return err
+	}
+
+	aeroRegistry, err := registry.New(cfg, backend)
 	if err != nil {
 		return err
 	}

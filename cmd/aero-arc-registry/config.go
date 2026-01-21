@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/makinje/aero-arc-registry/internal/registry"
+	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
 	"github.com/urfave/cli/v3"
 )
 

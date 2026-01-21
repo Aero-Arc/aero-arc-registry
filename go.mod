@@ -1,4 +1,4 @@
-module github.com/makinje/aero-arc-registry
+module github.com/Aero-Arc/aero-arc-registry
 
 go 1.24.0
 

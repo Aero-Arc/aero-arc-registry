@@ -29,10 +29,11 @@ import (
 
 type Registry struct {
 	cfg     *Config
+	backend Backend
 	RunFunc func(ctx context.Context, shutdownTimeout time.Duration) error
 }
 
-func New(cfg *Config) (*Registry, error) {
+func New(cfg *Config, backend Backend) (*Registry, error) {
 	if cfg == nil {
 		return nil, ErrNilConfig
 	}
@@ -42,7 +43,8 @@ func New(cfg *Config) (*Registry, error) {
 	}
 
 	aeroRegistry := &Registry{
-		cfg: cfg,
+		cfg:     cfg,
+		backend: backend,
 	}
 
 	aeroRegistry.RunFunc = aeroRegistry.Run

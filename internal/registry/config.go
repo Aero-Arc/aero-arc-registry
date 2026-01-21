@@ -66,7 +66,10 @@ type BackendConfig struct {
 
 	// Redis contains Redis-specific configuration when the Redis backend is used.
 	// It must be non-nil when Type is set to the Redis backend.
-	Redis *RedisConfig
+	Redis  *RedisConfig
+	Etcd   *EtcdConfig
+	Consul *ConsulConfig
+	Memory *MemoryConfig
 }
 
 // RegistryBackend represents the supported registry backend implementations.
@@ -89,6 +92,31 @@ type RedisConfig struct {
 	// DB is the Redis logical database index to use.
 	DB int
 }
+
+// EtcdConfig defines configuration for the Etcd-backed registry backend.
+//
+// TODO:
+//   - Validate endpoint formatting (host:port)
+//   - Support TLS configuration (CA / cert / key)
+//   - Add optional dial timeout configuration
+//   - Consider lease-based TTL enforcement
+type EtcdConfig struct{}
+
+// ConsulConfig defines configuration for the Consul-backed registry backend.
+//
+// TODO:
+//   - Validate address formatting
+//   - Support ACL token authentication
+//   - Support TLS configuration
+//   - Decide on session vs KV-based liveness tracking
+type ConsulConfig struct{}
+
+// MemoryConfig defines configuration for the in-memory registry backend.
+//
+// TODO:
+//   - Add optional capacity limits
+//   - Add debug logging / metrics toggles
+type MemoryConfig struct{}
 
 func ParseRegistryBackend(backend string) (RegistryBackend, error) {
 	if registryBackend, ok := registryMap[backend]; ok {
@@ -137,6 +165,21 @@ func (r *RedisConfig) Validate() error {
 		return ErrRedisDBInvalid
 	}
 
+	return nil
+}
+
+func (c *EtcdConfig) Validate() error {
+	// TODO: implement etcd config validation
+	return nil
+}
+
+func (c *ConsulConfig) Validate() error {
+	// TODO: implement consul config validation
+	return nil
+}
+
+func (c *MemoryConfig) Validate() error {
+	// TODO: implement memory config validation
 	return nil
 }
 
