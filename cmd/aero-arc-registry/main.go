@@ -14,7 +14,11 @@ import (
 	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
 	"github.com/Aero-Arc/aero-arc-registry/internal/transport/grpc"
 	"github.com/urfave/cli/v3"
+	gogrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
+
+var homeDir, _ = os.UserHomeDir()
 
 var registryCmd = cli.Command{
 	Usage:  "run the aero arc registry process",
@@ -38,12 +42,12 @@ var registryCmd = cli.Command{
 		&cli.StringFlag{
 			Name:  TLSKeyPathFlag,
 			Usage: "path to tls key file",
-			Value: fmt.Sprintf("~/%s", registry.DebugTLSKeyPath),
+			Value: fmt.Sprintf("%s/%s", homeDir, registry.DebugTLSKeyPath),
 		},
 		&cli.StringFlag{
 			Name:  TLSCertPathFlag,
 			Usage: "path to tls crt file",
-			Value: fmt.Sprintf("~/%s", registry.DebugTLSCertPath),
+			Value: fmt.Sprintf("%s/%s", homeDir, registry.DebugTLSCertPath),
 		},
 		&cli.DurationFlag{
 			Name:  RelayTTLFlag,
@@ -112,7 +116,21 @@ func RunRegistry(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	grpcServer, err := grpc.New(aeroRegistry)
+	var opts []gogrpc.ServerOption
+
+	if cfg.GRPC.TLS.Enabled {
+		creds, err := credentials.NewServerTLSFromFile(
+			cfg.GRPC.TLS.CertPath,
+			cfg.GRPC.TLS.KeyPath,
+		)
+		if err != nil {
+			return err
+		}
+
+		opts = append(opts, gogrpc.Creds(creds))
+	}
+
+	grpcServer, err := grpc.New(aeroRegistry, opts...)
 	if err != nil {
 		return err
 	}
