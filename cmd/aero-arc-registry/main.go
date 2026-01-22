@@ -4,14 +4,21 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
+	"github.com/Aero-Arc/aero-arc-registry/internal/transport/grpc"
 	"github.com/urfave/cli/v3"
+	gogrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
+
+var homeDir, _ = os.UserHomeDir()
 
 var registryCmd = cli.Command{
 	Usage:  "run the aero arc registry process",
@@ -35,12 +42,12 @@ var registryCmd = cli.Command{
 		&cli.StringFlag{
 			Name:  TLSKeyPathFlag,
 			Usage: "path to tls key file",
-			Value: fmt.Sprintf("~/%s", registry.DebugTLSKeyPath),
+			Value: fmt.Sprintf("%s/%s", homeDir, registry.DebugTLSKeyPath),
 		},
 		&cli.StringFlag{
 			Name:  TLSCertPathFlag,
 			Usage: "path to tls crt file",
-			Value: fmt.Sprintf("~/%s", registry.DebugTLSCertPath),
+			Value: fmt.Sprintf("%s/%s", homeDir, registry.DebugTLSCertPath),
 		},
 		&cli.DurationFlag{
 			Name:  RelayTTLFlag,
@@ -91,7 +98,7 @@ var registryCmd = cli.Command{
 }
 
 func RunRegistry(ctx context.Context, cmd *cli.Command) error {
-	registryCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	signalCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	cfg, err := buildConfigFromCLI(cmd)
@@ -109,9 +116,53 @@ func RunRegistry(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	shutdownTimeout := cmd.Duration(ShutDownTimeoutFlag)
+	var opts []gogrpc.ServerOption
 
-	return aeroRegistry.Run(registryCtx, shutdownTimeout)
+	if cfg.GRPC.TLS.Enabled {
+		creds, err := credentials.NewServerTLSFromFile(
+			cfg.GRPC.TLS.CertPath,
+			cfg.GRPC.TLS.KeyPath,
+		)
+		if err != nil {
+			return err
+		}
+
+		opts = append(opts, gogrpc.Creds(creds))
+	}
+
+	grpcServer, err := grpc.New(aeroRegistry, opts...)
+	if err != nil {
+		return err
+	}
+
+	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d",
+		cfg.GRPC.ListenAddress,
+		cfg.GRPC.ListenPort,
+	))
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		<-signalCtx.Done()
+		slog.Info("shutting down grpc server")
+		grpcServer.GracefulStop()
+
+		slog.Info("shutting down backend")
+		if err := backend.Close(context.Background()); err != nil {
+			slog.Error("failed to close backend", "error", err)
+		}
+	}()
+
+	slog.Info("Registry gRPC server listening",
+		"address", cfg.GRPC.ListenAddress,
+		"port", cfg.GRPC.ListenPort,
+	)
+	if err := grpcServer.Serve(lis); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func main() {
