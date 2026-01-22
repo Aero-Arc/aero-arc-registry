@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
+	"github.com/Aero-Arc/aero-arc-registry/internal/transport/grpc"
 	"github.com/urfave/cli/v3"
 )
 
@@ -91,7 +94,7 @@ var registryCmd = cli.Command{
 }
 
 func RunRegistry(ctx context.Context, cmd *cli.Command) error {
-	registryCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	signalCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	cfg, err := buildConfigFromCLI(cmd)
@@ -109,9 +112,39 @@ func RunRegistry(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	shutdownTimeout := cmd.Duration(ShutDownTimeoutFlag)
+	grpcServer, err := grpc.New(aeroRegistry)
+	if err != nil {
+		return err
+	}
 
-	return aeroRegistry.Run(registryCtx, shutdownTimeout)
+	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d",
+		cfg.GRPC.ListenAddress,
+		cfg.GRPC.ListenPort,
+	))
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		<-signalCtx.Done()
+		slog.Info("shutting down grpc server")
+		grpcServer.GracefulStop()
+
+		slog.Info("shutting down backend")
+		if err := backend.Close(context.Background()); err != nil {
+			slog.Error("failed to close backend", "error", err)
+		}
+	}()
+
+	slog.Info("Registry gRPC server listening",
+		"address", cfg.GRPC.ListenAddress,
+		"port", cfg.GRPC.ListenPort,
+	)
+	if err := grpcServer.Serve(lis); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func main() {
