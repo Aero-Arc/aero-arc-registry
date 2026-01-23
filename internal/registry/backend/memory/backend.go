@@ -3,21 +3,78 @@ package memory
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
 )
 
 type Backend struct {
-	cfg *registry.MemoryConfig
+	cfg    *registry.MemoryConfig
+	relays map[string]*relayEntry
+	mu     sync.RWMutex
+}
+
+type relayEntry struct {
+	mu    sync.Mutex
+	relay *registry.Relay
 }
 
 func New(cfg *registry.MemoryConfig) (*Backend, error) {
-	return &Backend{cfg: cfg}, nil
+	return &Backend{
+		cfg:    cfg,
+		relays: make(map[string]*relayEntry),
+	}, nil
 }
 
 func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error {
-	return registry.ErrNotImplemented
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	b.mu.RLock()
+	entry, exists := b.relays[relay.ID]
+	b.mu.RUnlock()
+
+	if exists {
+		entry.mu.Lock()
+		defer entry.mu.Unlock()
+
+		// Idempotent Update
+		entry.relay.ID = relay.ID
+		entry.relay.Address = relay.Address
+		entry.relay.GRPCPort = relay.GRPCPort
+		entry.relay.LastSeen = time.Now()
+
+		return nil
+	}
+
+	newEntry := &relayEntry{
+		relay: &registry.Relay{
+			ID:       relay.ID,
+			Address:  relay.Address,
+			GRPCPort: relay.GRPCPort,
+			LastSeen: time.Now(),
+		},
+	}
+
+	b.mu.Lock()
+	if existing, ok := b.relays[relay.ID]; ok {
+		b.mu.Unlock()
+
+		existing.mu.Lock()
+		defer existing.mu.Unlock()
+		existing.relay.LastSeen = time.Now()
+
+		return nil
+	}
+
+	b.relays[relay.ID] = newEntry
+	b.mu.Unlock()
+
+	return nil
 }
 
 func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string, ts time.Time) error {
