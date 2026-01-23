@@ -78,7 +78,24 @@ func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error
 }
 
 func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string, ts time.Time) error {
-	return registry.ErrNotImplemented
+	b.mu.RLock()
+	relayEntry, exists := b.relays[relayID]
+	b.mu.RUnlock()
+
+	if !exists {
+		return ErrRelayNotRegistered
+	}
+	relayEntry.mu.Lock()
+	relayEntry.relay.LastSeen = ts
+	relayEntry.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	return nil
 }
 
 func (b *Backend) ListRelays(ctx context.Context) ([]registry.Relay, error) {
