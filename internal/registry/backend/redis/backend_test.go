@@ -2,52 +2,142 @@ package redis
 
 import (
 	"context"
-	"errors"
+	"net"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
+	"github.com/alicebob/miniredis/v2"
 )
 
 var _ registry.Backend = (*Backend)(nil)
 
-func TestBackendMethodsReturnNotImplemented(t *testing.T) {
-	backend, err := New(&registry.RedisConfig{})
+func newTestBackend(t *testing.T) (*Backend, func()) {
+	t.Helper()
+
+	s, err := miniredis.Run()
 	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
+		t.Fatalf("miniredis: %v", err)
 	}
+
+	host, portStr, err := net.SplitHostPort(s.Addr())
+	if err != nil {
+		s.Close()
+		t.Fatalf("split host/port: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		s.Close()
+		t.Fatalf("parse port: %v", err)
+	}
+
+	backend, err := New(&registry.RedisConfig{Address: host, Port: port})
+	if err != nil {
+		s.Close()
+		t.Fatalf("new backend: %v", err)
+	}
+
+	cleanup := func() {
+		_ = backend.Close(context.Background())
+		s.Close()
+	}
+
+	return backend, cleanup
+}
+
+func TestBackendRelayLifecycle(t *testing.T) {
+	backend, cleanup := newTestBackend(t)
+	defer cleanup()
 
 	ctx := context.Background()
+	relay := registry.Relay{ID: "relay-1", Address: "10.0.0.1", GRPCPort: 50051}
 
-	if err := backend.RegisterRelay(ctx, registry.Relay{}); !errors.Is(err, registry.ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented, got %v", err)
+	if err := backend.RegisterRelay(ctx, relay); err != nil {
+		t.Fatalf("RegisterRelay: %v", err)
 	}
 
-	if err := backend.HeartbeatRelay(ctx, "relay", time.Now()); !errors.Is(err, registry.ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented, got %v", err)
+	relays, err := backend.ListRelays(ctx)
+	if err != nil {
+		t.Fatalf("ListRelays: %v", err)
+	}
+	if len(relays) != 1 {
+		t.Fatalf("expected 1 relay, got %d", len(relays))
+	}
+	if relays[0].ID != relay.ID || relays[0].Address != relay.Address || relays[0].GRPCPort != relay.GRPCPort {
+		t.Fatalf("relay mismatch: %#v", relays[0])
 	}
 
-	if _, err := backend.ListRelays(ctx); !errors.Is(err, registry.ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented, got %v", err)
+	ts := time.Now().UTC().Add(10 * time.Second)
+	if err := backend.HeartbeatRelay(ctx, relay.ID, ts); err != nil {
+		t.Fatalf("HeartbeatRelay: %v", err)
 	}
 
-	if err := backend.RemoveRelay(ctx, "relay"); !errors.Is(err, registry.ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented, got %v", err)
+	relays, err = backend.ListRelays(ctx)
+	if err != nil {
+		t.Fatalf("ListRelays: %v", err)
+	}
+	if len(relays) != 1 {
+		t.Fatalf("expected 1 relay after heartbeat, got %d", len(relays))
+	}
+	if relays[0].LastSeen.UnixNano() != ts.UnixNano() {
+		t.Fatalf("expected last seen %v, got %v", ts, relays[0].LastSeen)
 	}
 
-	if err := backend.RegisterAgent(ctx, registry.Agent{}, "relay"); !errors.Is(err, registry.ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented, got %v", err)
+	if err := backend.RemoveRelay(ctx, relay.ID); err != nil {
+		t.Fatalf("RemoveRelay: %v", err)
 	}
 
-	if err := backend.HeartbeatAgent(ctx, "agent", time.Now()); !errors.Is(err, registry.ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented, got %v", err)
+	relays, err = backend.ListRelays(ctx)
+	if err != nil {
+		t.Fatalf("ListRelays after remove: %v", err)
+	}
+	if len(relays) != 0 {
+		t.Fatalf("expected 0 relays after remove, got %d", len(relays))
+	}
+}
+
+func TestBackendAgentPlacement(t *testing.T) {
+	backend, cleanup := newTestBackend(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	agent := registry.Agent{ID: "agent-1"}
+	relayID := "relay-1"
+
+	placement, err := backend.GetAgentPlacement(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("GetAgentPlacement: %v", err)
+	}
+	if placement != nil {
+		t.Fatalf("expected nil placement, got %#v", placement)
 	}
 
-	if _, err := backend.GetAgentPlacement(ctx, "agent"); !errors.Is(err, registry.ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented, got %v", err)
+	if err := backend.RegisterAgent(ctx, agent, relayID); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
 	}
 
-	if err := backend.Close(ctx); err != nil {
-		t.Fatalf("expected nil error, got %v", err)
+	placement, err = backend.GetAgentPlacement(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("GetAgentPlacement: %v", err)
+	}
+	if placement == nil {
+		t.Fatalf("expected placement to be stored")
+	}
+	if placement.AgentID != agent.ID || placement.RelayID != relayID {
+		t.Fatalf("placement mismatch: %#v", placement)
+	}
+
+	updatedAt := time.Now().UTC().Add(30 * time.Second)
+	if err := backend.HeartbeatAgent(ctx, agent.ID, updatedAt); err != nil {
+		t.Fatalf("HeartbeatAgent: %v", err)
+	}
+
+	placement, err = backend.GetAgentPlacement(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("GetAgentPlacement: %v", err)
+	}
+	if placement.UpdatedAt.UnixNano() != updatedAt.UnixNano() {
+		t.Fatalf("expected updated at %v, got %v", updatedAt, placement.UpdatedAt)
 	}
 }
