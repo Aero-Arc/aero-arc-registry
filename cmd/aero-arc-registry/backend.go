@@ -11,7 +11,7 @@ import (
 func buildBackendFromConfig(cfg *registry.Config) (registry.Backend, error) {
 	switch cfg.Backend.Type {
 	case registry.RedisRegistryBackend:
-		return redis.New(cfg.Backend.Redis)
+		return redis.New(cfg.Backend.Redis, cfg.TTL)
 	case registry.ConsulRegistryBackend:
 		return consul.New(cfg.Backend.Consul)
 	case registry.EtcdRegistryBackend:
