@@ -44,6 +44,10 @@ func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*regis
 	return nil, registry.ErrNotImplemented
 }
 
+func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
+	return nil, registry.ErrNotImplemented
+}
+
 func (b *Backend) Close(ctx context.Context) error {
 	return nil
 }

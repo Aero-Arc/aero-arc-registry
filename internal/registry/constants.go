@@ -13,5 +13,6 @@ const (
 )
 
 var registryMap = map[string]RegistryBackend{
-	"redis": RedisRegistryBackend,
+	"redis":  RedisRegistryBackend,
+	"memory": MemoryRegistryBackend,
 }
