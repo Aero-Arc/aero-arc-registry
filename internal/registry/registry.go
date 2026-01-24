@@ -21,16 +21,9 @@
 // deployed as a standalone, horizontally scalable control plane service.
 package registry
 
-import (
-	"context"
-	"errors"
-	"time"
-)
-
 type Registry struct {
 	cfg     *Config
 	backend Backend
-	RunFunc func(ctx context.Context, shutdownTimeout time.Duration) error
 }
 
 func New(cfg *Config, backend Backend) (*Registry, error) {
@@ -47,60 +40,5 @@ func New(cfg *Config, backend Backend) (*Registry, error) {
 		backend: backend,
 	}
 
-	aeroRegistry.RunFunc = aeroRegistry.Run
-
 	return aeroRegistry, nil
-}
-
-func (r *Registry) Run(ctx context.Context, shutdownTimeout time.Duration) error {
-	runErrCh := make(chan error, 1)
-
-	go func() {
-		// TODO: replace with gRPC server startup and Serve.
-		<-ctx.Done()
-		runErrCh <- ctx.Err()
-	}()
-
-	shouldShutdown := false
-	select {
-	case err := <-runErrCh:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return err
-		}
-		if ctx.Err() == nil {
-			return nil
-		}
-		shouldShutdown = true
-	case <-ctx.Done():
-		shouldShutdown = true
-	}
-
-	if !shouldShutdown {
-		return nil
-	}
-
-	shutdownCtx := context.Background()
-	var cancel context.CancelFunc
-	if shutdownTimeout > 0 {
-		shutdownCtx, cancel = context.WithTimeout(context.Background(), shutdownTimeout)
-	} else {
-		shutdownCtx, cancel = context.WithCancel(context.Background())
-	}
-	defer cancel()
-
-	shutdownErrCh := make(chan error, 1)
-	go func() {
-		// TODO: replace with gRPC GracefulStop and backend cleanup.
-		shutdownErrCh <- nil
-	}()
-
-	select {
-	case err := <-shutdownErrCh:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return err
-		}
-		return nil
-	case <-shutdownCtx.Done():
-		return shutdownCtx.Err()
-	}
 }
