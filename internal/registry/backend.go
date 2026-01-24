@@ -18,6 +18,7 @@ type Backend interface {
 	RegisterAgent(ctx context.Context, agent Agent, relayID string) error
 	HeartbeatAgent(ctx context.Context, agentID string, ts time.Time) error
 	GetAgentPlacement(ctx context.Context, agentID string) (*AgentPlacement, error)
+	ListAgents(ctx context.Context) ([]Agent, error)
 
 	// Shutdown
 	Close(ctx context.Context) error
