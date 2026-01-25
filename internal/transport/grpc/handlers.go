@@ -31,3 +31,7 @@ func (s *Server) HeartbeatAgent(ctx context.Context, req *registryv1.HeartbeatAg
 func (s *Server) GetAgentPlacement(ctx context.Context, req *registryv1.GetAgentPlacementRequest) (*registryv1.GetAgentPlacementResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "GetAgentPlacement not implemented")
 }
+
+func (s *Server) ListAgents(ctx context.Context, req *registryv1.ListAgentsRequest) (*registryv1.ListAgentsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "ListAgents not implemented")
+}

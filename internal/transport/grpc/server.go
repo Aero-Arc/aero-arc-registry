@@ -9,6 +9,7 @@ import (
 	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
 	registryv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/registry/v1"
 	gogrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 type Server struct {
@@ -26,6 +27,7 @@ func New(reg *registry.Registry, opts ...gogrpc.ServerOption) (*Server, error) {
 
 	s.grpcServer = gogrpc.NewServer(opts...)
 	registryv1.RegisterAeroRegistryServer(s.grpcServer, s)
+	reflection.Register(s.grpcServer)
 
 	return s, nil
 }

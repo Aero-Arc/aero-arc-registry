@@ -21,7 +21,7 @@ func buildConfigFromCLI(cmd *cli.Command) (*registry.Config, error) {
 			ListenAddress: cmd.String(GRPCListenAddrFlag),
 			ListenPort:    cmd.Int(GRPCListenPortFlag),
 			TLS: registry.TLSConfig{
-				Enabled:  true,
+				Enabled:  cmd.Bool(TLSEnabledFlag),
 				CertPath: cmd.String(TLSCertPathFlag),
 				KeyPath:  cmd.String(TLSKeyPathFlag),
 			},
