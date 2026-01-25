@@ -28,7 +28,7 @@ type Backend interface {
 type Relay struct {
 	ID       string
 	Address  string
-	GRPCPort int
+	GRPCPort int32
 	LastSeen time.Time
 }
 
