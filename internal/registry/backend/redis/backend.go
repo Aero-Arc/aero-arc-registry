@@ -201,14 +201,32 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string, ts time.Ti
 		return registry.ErrHeartbeatTimestampMissing
 	}
 
+	placementData, err := b.rdb.HGetAll(ctx, placementKey(agentID)).Result()
+	if err != nil {
+		return err
+	}
+	if len(placementData) == 0 {
+		return registry.ErrAgentNotPlaced
+	}
+
+	placementAgentID := placementData["AgentID"]
+	placementRelayID := placementData["RelayID"]
+	if placementAgentID == "" || placementRelayID == "" {
+		return registry.ErrAgentNotPlaced
+	}
+
 	now := time.Now().UTC()
 	pipe := b.rdb.Pipeline()
 	pipe.HSet(ctx, agentKey(agentID), "LastHeartbeatUnixMs", ts.UTC().UnixMilli())
 	pipe.PExpire(ctx, agentKey(agentID), b.ttl.Agent)
-	pipe.HSet(ctx, placementKey(agentID), "UpdatedAtUnixMs", now.UnixMilli())
+	pipe.HSet(ctx, placementKey(agentID), map[string]any{
+		"AgentID":         placementAgentID,
+		"RelayID":         placementRelayID,
+		"UpdatedAtUnixMs": now.UnixMilli(),
+	})
 	pipe.PExpire(ctx, placementKey(agentID), b.ttl.Agent)
 	pipe.SAdd(ctx, agentsIndexKey, agentID)
-	_, err := pipe.Exec(ctx)
+	_, err = pipe.Exec(ctx)
 	return err
 }
 

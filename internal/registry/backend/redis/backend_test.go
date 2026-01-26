@@ -145,7 +145,8 @@ func TestBackendAgentPlacement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAgentPlacement: %v", err)
 	}
-	if placement.UpdatedAt.Before(before) || placement.UpdatedAt.After(after) {
+	updatedAtMs := placement.UpdatedAt.UnixMilli()
+	if updatedAtMs < before.UnixMilli() || updatedAtMs > after.UnixMilli() {
 		t.Fatalf("expected updated at between %v and %v, got %v", before, after, placement.UpdatedAt)
 	}
 }
