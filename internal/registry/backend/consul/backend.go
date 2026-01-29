@@ -3,7 +3,6 @@ package consul
 
 import (
 	"context"
-	"time"
 
 	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
 )
@@ -20,7 +19,7 @@ func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error
 	return registry.ErrNotImplemented
 }
 
-func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string, ts time.Time) error {
+func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string) error {
 	return registry.ErrNotImplemented
 }
 
@@ -36,11 +35,15 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 	return registry.ErrNotImplemented
 }
 
-func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string, ts time.Time) error {
+func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string) error {
 	return registry.ErrNotImplemented
 }
 
 func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*registry.AgentPlacement, error) {
+	return nil, registry.ErrNotImplemented
+}
+
+func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 	return nil, registry.ErrNotImplemented
 }
 

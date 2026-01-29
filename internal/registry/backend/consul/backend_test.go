@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
 )
@@ -23,7 +22,7 @@ func TestBackendMethodsReturnNotImplemented(t *testing.T) {
 		t.Fatalf("expected ErrNotImplemented, got %v", err)
 	}
 
-	if err := backend.HeartbeatRelay(ctx, "relay", time.Now()); !errors.Is(err, registry.ErrNotImplemented) {
+	if err := backend.HeartbeatRelay(ctx, "relay"); !errors.Is(err, registry.ErrNotImplemented) {
 		t.Fatalf("expected ErrNotImplemented, got %v", err)
 	}
 
@@ -39,7 +38,7 @@ func TestBackendMethodsReturnNotImplemented(t *testing.T) {
 		t.Fatalf("expected ErrNotImplemented, got %v", err)
 	}
 
-	if err := backend.HeartbeatAgent(ctx, "agent", time.Now()); !errors.Is(err, registry.ErrNotImplemented) {
+	if err := backend.HeartbeatAgent(ctx, "agent"); !errors.Is(err, registry.ErrNotImplemented) {
 		t.Fatalf("expected ErrNotImplemented, got %v", err)
 	}
 

@@ -39,6 +39,11 @@ var registryCmd = cli.Command{
 			Usage: "the port the registry's grpc server will listen on",
 			Value: 50051,
 		},
+		&cli.BoolFlag{
+			Name:  TLSEnabledFlag,
+			Usage: "determine if tls is enabled in registry transport protocol",
+			Value: false,
+		},
 		&cli.StringFlag{
 			Name:  TLSKeyPathFlag,
 			Usage: "path to tls key file",

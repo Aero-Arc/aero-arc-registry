@@ -5,6 +5,7 @@ const (
 	BackendFlag           = "backend"
 	GRPCListenAddrFlag    = "grpc-listen-address"
 	GRPCListenPortFlag    = "grpc-listen-port"
+	TLSEnabledFlag        = "tls-enabled"
 	TLSKeyPathFlag        = "tls-key-path"
 	TLSCertPathFlag       = "tls-cert-path"
 	RelayTTLFlag          = "relay-ttl"
