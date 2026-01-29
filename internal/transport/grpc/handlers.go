@@ -69,10 +69,6 @@ func (s *Server) HeartbeatRelay(ctx context.Context, req *registryv1.HeartbeatRe
 		return nil, status.Errorf(codes.InvalidArgument, "RelayId is required")
 	}
 
-	if req.TimestampUnixMs == 0 {
-		return nil, status.Errorf(codes.InvalidArgument, "TimestampUnixMs is required")
-	}
-
 	slog.LogAttrs(ctx, slog.LevelDebug, "received request",
 		slog.String("method", "HeartbeatRelay"),
 		slog.String("relay_id", req.RelayId),
@@ -287,7 +283,7 @@ func toStatusError(err error) error {
 	case errors.Is(err, registry.ErrConflict):
 		return status.Error(codes.AlreadyExists, err.Error())
 	default:
-		slog.Error("unclassified error", "err", err.Error())
+		slog.Error("unclassified error", "err", err)
 		return status.Error(codes.Internal, "internal error")
 	}
 }
