@@ -10,10 +10,10 @@ func TestParseRegistryBackend(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		input    string
-		want     RegistryBackend
-		wantErr  error
+		name    string
+		input   string
+		want    RegistryBackend
+		wantErr error
 	}{
 		{
 			name:    "supported backend",
@@ -30,7 +30,6 @@ func TestParseRegistryBackend(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -193,7 +192,6 @@ func TestConfigValidate(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -252,7 +250,6 @@ func TestRedisConfigValidate(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -320,7 +317,6 @@ func TestGRPCConfigValidate(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -367,7 +363,6 @@ func TestTTLConfigValidate(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 

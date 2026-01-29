@@ -92,16 +92,16 @@ func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error
 	return nil
 }
 
-func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string, ts time.Time) error {
+func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string) error {
 	b.relayMu.RLock()
 	relayEntry, exists := b.relays[relayID]
 	b.relayMu.RUnlock()
 
 	if !exists {
-		return ErrRelayNotRegistered
+		return errRelayNotRegistered
 	}
 	relayEntry.mu.Lock()
-	relayEntry.relay.LastSeen = ts
+	relayEntry.relay.LastSeen = time.Now()
 	relayEntry.mu.Unlock()
 
 	select {
@@ -152,7 +152,7 @@ func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 	defer b.agentMu.Unlock()
 
 	if _, exists := b.relays[relayID]; !exists {
-		return ErrRelayNotRegistered
+		return errRelayNotRegistered
 	}
 	delete(b.relays, relayID)
 
@@ -177,7 +177,7 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 	_, relayExists := b.relays[relayID]
 	b.relayMu.RUnlock()
 	if !relayExists {
-		return ErrRelayNotRegistered
+		return errRelayNotRegistered
 	}
 
 	b.agentMu.RLock()
@@ -238,21 +238,21 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 	return nil
 }
 
-func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string, ts time.Time) error {
+func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string) error {
 	b.agentMu.RLock()
 	entry, exists := b.agents[agentID]
 	b.agentMu.RUnlock()
 	if !exists {
-		return ErrAgentNotRegistered
+		return errAgentNotRegistered
 	}
 
 	entry.mu.Lock()
-	entry.agent.LastHeartbeat = ts
+	entry.agent.LastHeartbeat = time.Now()
 	entry.mu.Unlock()
 
 	b.agentMu.Lock()
 	if placement, ok := b.placements[agentID]; ok {
-		placement.UpdatedAt = ts
+		placement.UpdatedAt = time.Now()
 	}
 	b.agentMu.Unlock()
 
@@ -277,7 +277,7 @@ func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*regis
 
 	placement, exists := b.placements[agentID]
 	if !exists {
-		return nil, ErrAgentNotRegistered
+		return nil, errAgentNotRegistered
 	}
 
 	result := *placement

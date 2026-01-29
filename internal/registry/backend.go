@@ -10,13 +10,13 @@ import (
 type Backend interface {
 	// Relay lifecycle
 	RegisterRelay(ctx context.Context, relay Relay) error
-	HeartbeatRelay(ctx context.Context, relayID string, ts time.Time) error
+	HeartbeatRelay(ctx context.Context, relayID string) error
 	ListRelays(ctx context.Context) ([]Relay, error)
 	RemoveRelay(ctx context.Context, relayID string) error
 
 	// Agent lifecycle
 	RegisterAgent(ctx context.Context, agent Agent, relayID string) error
-	HeartbeatAgent(ctx context.Context, agentID string, ts time.Time) error
+	HeartbeatAgent(ctx context.Context, agentID string) error
 	GetAgentPlacement(ctx context.Context, agentID string) (*AgentPlacement, error)
 	ListAgents(ctx context.Context) ([]Agent, error)
 

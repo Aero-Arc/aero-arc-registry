@@ -35,8 +35,8 @@ func TestRelayLifecycle(t *testing.T) {
 		t.Fatalf("expected relay ID %q, got %q", relay.ID, relays[0].ID)
 	}
 
-	ts := time.Now().Add(2 * time.Second)
-	if err := backend.HeartbeatRelay(ctx, relay.ID, ts); err != nil {
+	relayHeartbeatStart := time.Now()
+	if err := backend.HeartbeatRelay(ctx, relay.ID); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
@@ -44,8 +44,8 @@ func TestRelayLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if relays[0].LastSeen != ts {
-		t.Fatalf("expected LastSeen %v, got %v", ts, relays[0].LastSeen)
+	if relays[0].LastSeen.Before(relayHeartbeatStart) {
+		t.Fatalf("expected LastSeen >= %v, got %v", relayHeartbeatStart, relays[0].LastSeen)
 	}
 
 	if err := backend.RemoveRelay(ctx, relay.ID); err != nil {
@@ -86,8 +86,8 @@ func TestAgentLifecycle(t *testing.T) {
 		t.Fatalf("unexpected placement: %#v", placement)
 	}
 
-	ts := time.Now().Add(3 * time.Second)
-	if err := backend.HeartbeatAgent(ctx, agent.ID, ts); err != nil {
+	agentHeartbeatStart := time.Now()
+	if err := backend.HeartbeatAgent(ctx, agent.ID); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
@@ -95,14 +95,14 @@ func TestAgentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if placement.UpdatedAt != ts {
-		t.Fatalf("expected UpdatedAt %v, got %v", ts, placement.UpdatedAt)
+	if placement.UpdatedAt.Before(agentHeartbeatStart) {
+		t.Fatalf("expected UpdatedAt >= %v, got %v", agentHeartbeatStart, placement.UpdatedAt)
 	}
 
 	if err := backend.RemoveRelay(ctx, relay.ID); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if _, err := backend.GetAgentPlacement(ctx, agent.ID); !errors.Is(err, ErrAgentNotRegistered) {
+	if _, err := backend.GetAgentPlacement(ctx, agent.ID); !errors.Is(err, errAgentNotRegistered) {
 		t.Fatalf("expected ErrAgentNotRegistered, got %v", err)
 	}
 }

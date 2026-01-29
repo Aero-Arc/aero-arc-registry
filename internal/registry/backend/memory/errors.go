@@ -1,8 +1,12 @@
 package memory
 
-import "errors"
+import (
+	"fmt"
+
+	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
+)
 
 var (
-	ErrRelayNotRegistered = errors.New("relay not registered")
-	ErrAgentNotRegistered = errors.New("agent not registered")
+	errRelayNotRegistered = fmt.Errorf("relay not registered: %w", registry.ErrNotFound)
+	errAgentNotRegistered = fmt.Errorf("agent not registered: %w", registry.ErrNotFound)
 )

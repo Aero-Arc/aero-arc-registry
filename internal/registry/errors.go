@@ -1,6 +1,8 @@
 package registry
 
-import "errors"
+import (
+	"errors"
+)
 
 var (
 	ErrUnsupportedBackend = errors.New("unsupported registry backend")
@@ -15,4 +17,7 @@ var (
 	ErrTTLAgentInvalid    = errors.New("agent ttl must be > 0")
 	ErrNilConfig          = errors.New("registry config is nil")
 	ErrNotImplemented     = errors.New("not implemented")
+	ErrNotFound           = errors.New("not found")
+	ErrInvalid            = errors.New("invalid")
+	ErrConflict           = errors.New("conflict")
 )
