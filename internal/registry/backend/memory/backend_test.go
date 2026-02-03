@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -102,7 +101,12 @@ func TestAgentLifecycle(t *testing.T) {
 	if err := backend.RemoveRelay(ctx, relay.ID); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if _, err := backend.GetAgentPlacement(ctx, agent.ID); !errors.Is(err, errAgentNotRegistered) {
-		t.Fatalf("expected ErrAgentNotRegistered, got %v", err)
+
+	placement, err = backend.GetAgentPlacement(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if placement.AgentID != agent.ID || placement.RelayID != relay.ID {
+		t.Fatalf("unexpected placement after relay removal: %#v", placement)
 	}
 }

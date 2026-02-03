@@ -156,13 +156,6 @@ func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 	}
 	delete(b.relays, relayID)
 
-	for agentID, placement := range b.placements {
-		if placement.RelayID == relayID {
-			delete(b.placements, agentID)
-			delete(b.agents, agentID)
-		}
-	}
-
 	return nil
 }
 
