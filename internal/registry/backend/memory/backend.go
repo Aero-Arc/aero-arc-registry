@@ -304,6 +304,14 @@ func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 	return agents, nil
 }
 
+func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*registry.Agent, error) {
+	return nil, registry.ErrNotImplemented
+}
+
+func (b *Backend) RemoveAgents(ctx context.Context, agentIDs []string) error {
+	return registry.ErrNotImplemented
+}
+
 func (b *Backend) Close(ctx context.Context) error {
 	return nil
 }
