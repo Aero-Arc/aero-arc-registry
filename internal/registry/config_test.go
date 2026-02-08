@@ -10,16 +10,30 @@ func TestParseRegistryBackend(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		input    string
-		want     RegistryBackend
-		wantErr  error
+		name    string
+		input   string
+		want    RegistryBackend
+		wantErr error
 	}{
 		{
-			name:    "supported backend",
-			input:   "redis",
-			want:    RedisRegistryBackend,
-			wantErr: nil,
+			name:  "redis backend",
+			input: "redis",
+			want:  RedisRegistryBackend,
+		},
+		{
+			name:  "etcd backend",
+			input: "etcd",
+			want:  EtcdRegistryBackend,
+		},
+		{
+			name:  "consul backend",
+			input: "consul",
+			want:  ConsulRegistryBackend,
+		},
+		{
+			name:  "memory backend",
+			input: "memory",
+			want:  MemoryRegistryBackend,
 		},
 		{
 			name:    "unsupported backend",

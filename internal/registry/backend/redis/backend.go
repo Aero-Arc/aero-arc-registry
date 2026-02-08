@@ -11,6 +11,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
@@ -18,13 +19,14 @@ import (
 
 type Backend struct {
 	cfg *registry.RedisConfig
-	do  func(ctx context.Context, args ...string) (any, error)
-}
 
-var (
-	errRelayNotRegistered = errors.New("relay not registered")
-	errAgentNotRegistered = errors.New("agent not registered")
-)
+	do      func(ctx context.Context, args ...string) (any, error)
+	doMulti func(ctx context.Context, cmds [][]string) ([]any, error)
+
+	mu     sync.Mutex
+	conn   net.Conn
+	reader *bufio.Reader
+}
 
 const (
 	relaysSetKey = "registry:relays"
@@ -53,6 +55,7 @@ func New(cfg *registry.RedisConfig) (*Backend, error) {
 
 	b := &Backend{cfg: cfg}
 	b.do = b.exec
+	b.doMulti = b.execMulti
 	return b, nil
 }
 
@@ -61,7 +64,7 @@ func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error
 		return err
 	}
 	if relay.ID == "" {
-		return fmt.Errorf("relay id is empty")
+		return registry.ErrRelayIDEmpty
 	}
 
 	if relay.LastSeen.IsZero() {
@@ -73,13 +76,11 @@ func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error
 		return err
 	}
 
-	if _, err := b.do(ctx, "SET", relayKey(relay.ID), string(payload)); err != nil {
-		return err
-	}
-	if _, err := b.do(ctx, "SADD", relaysSetKey, relay.ID); err != nil {
-		return err
-	}
-	return nil
+	_, err = b.doMulti(ctx, [][]string{
+		{"SET", relayKey(relay.ID), string(payload)},
+		{"SADD", relaysSetKey, relay.ID},
+	})
+	return err
 }
 
 func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string, ts time.Time) error {
@@ -87,7 +88,10 @@ func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string, ts time.Ti
 		return err
 	}
 	if relayID == "" {
-		return fmt.Errorf("relay id is empty")
+		return registry.ErrRelayIDEmpty
+	}
+	if ts.IsZero() {
+		ts = time.Now()
 	}
 
 	relay, err := b.getRelay(ctx, relayID)
@@ -95,9 +99,6 @@ func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string, ts time.Ti
 		return err
 	}
 	relay.LastSeen = ts
-	if relay.LastSeen.IsZero() {
-		relay.LastSeen = time.Now()
-	}
 	return b.RegisterRelay(ctx, relay)
 }
 
@@ -114,19 +115,45 @@ func (b *Backend) ListRelays(ctx context.Context) ([]registry.Relay, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = relayKey(id)
+	}
+
+	args := append([]string{"MGET"}, keys...)
+	raw, err := b.do(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected MGET response type: %T", raw)
+	}
 
 	relays := make([]registry.Relay, 0, len(ids))
-	for _, id := range ids {
-		relay, err := b.getRelay(ctx, id)
-		if err != nil {
-			if errors.Is(err, errRelayNotRegistered) {
-				_, _ = b.do(ctx, "SREM", relaysSetKey, id)
-				continue
-			}
+	var staleIDs []string
+	for i, item := range items {
+		b, ok := item.([]byte)
+		if !ok || b == nil {
+			staleIDs = append(staleIDs, ids[i])
+			continue
+		}
+		var relay registry.Relay
+		if err := json.Unmarshal(b, &relay); err != nil {
 			return nil, err
 		}
 		relays = append(relays, relay)
 	}
+
+	// Clean up stale set members whose keys no longer exist.
+	for _, id := range staleIDs {
+		_, _ = b.do(ctx, "SREM", relaysSetKey, id)
+	}
+
 	return relays, nil
 }
 
@@ -135,7 +162,7 @@ func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 		return err
 	}
 	if relayID == "" {
-		return fmt.Errorf("relay id is empty")
+		return registry.ErrRelayIDEmpty
 	}
 
 	existsRaw, err := b.do(ctx, "EXISTS", relayKey(relayID))
@@ -147,19 +174,17 @@ func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 		return err
 	}
 	if exists == 0 {
-		return errRelayNotRegistered
+		return registry.ErrRelayNotRegistered
 	}
 
-	if _, err := b.do(ctx, "DEL", relayKey(relayID)); err != nil {
-		return err
-	}
-	if _, err := b.do(ctx, "SREM", relaysSetKey, relayID); err != nil {
-		return err
-	}
+	_, err = b.doMulti(ctx, [][]string{
+		{"DEL", relayKey(relayID)},
+		{"SREM", relaysSetKey, relayID},
+	})
 
 	// Persistence-only responsibility: remove relay record and relay index membership.
 	// Any cascading invalidation of dependent agents is orchestrated by the registry layer.
-	return nil
+	return err
 }
 
 func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relayID string) error {
@@ -167,10 +192,10 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 		return err
 	}
 	if relayID == "" {
-		return fmt.Errorf("relay id is empty")
+		return registry.ErrRelayIDEmpty
 	}
 	if agent.ID == "" {
-		return fmt.Errorf("agent id is empty")
+		return registry.ErrAgentIDEmpty
 	}
 
 	if _, err := b.getRelay(ctx, relayID); err != nil {
@@ -189,16 +214,12 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 		return err
 	}
 
-	if _, err := b.do(ctx, "SET", agentKey(agent.ID), string(agentPayload)); err != nil {
-		return err
-	}
-	if _, err := b.do(ctx, "SET", placementKey(agent.ID), string(placementPayload)); err != nil {
-		return err
-	}
-	if _, err := b.do(ctx, "SADD", agentsSetKey, agent.ID); err != nil {
-		return err
-	}
-	return nil
+	_, err = b.doMulti(ctx, [][]string{
+		{"SET", agentKey(agent.ID), string(agentPayload)},
+		{"SET", placementKey(agent.ID), string(placementPayload)},
+		{"SADD", agentsSetKey, agent.ID},
+	})
+	return err
 }
 
 func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string, ts time.Time) error {
@@ -206,7 +227,7 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string, ts time.Ti
 		return err
 	}
 	if agentID == "" {
-		return fmt.Errorf("agent id is empty")
+		return registry.ErrAgentIDEmpty
 	}
 
 	agent, err := b.getAgent(ctx, agentID)
@@ -217,11 +238,8 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string, ts time.Ti
 		ts = time.Now()
 	}
 	agent.LastHeartbeat = ts
-	payload, err := json.Marshal(agent)
+	agentPayload, err := json.Marshal(agent)
 	if err != nil {
-		return err
-	}
-	if _, err := b.do(ctx, "SET", agentKey(agentID), string(payload)); err != nil {
 		return err
 	}
 
@@ -234,7 +252,11 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string, ts time.Ti
 	if err != nil {
 		return err
 	}
-	_, err = b.do(ctx, "SET", placementKey(agentID), string(placementPayload))
+
+	_, err = b.doMulti(ctx, [][]string{
+		{"SET", agentKey(agentID), string(agentPayload)},
+		{"SET", placementKey(agentID), string(placementPayload)},
+	})
 	return err
 }
 
@@ -243,7 +265,7 @@ func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*regis
 		return nil, err
 	}
 	if agentID == "" {
-		return nil, fmt.Errorf("agent id is empty")
+		return nil, registry.ErrAgentIDEmpty
 	}
 
 	raw, err := b.do(ctx, "GET", placementKey(agentID))
@@ -252,7 +274,7 @@ func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*regis
 	}
 	placementBytes, ok := raw.([]byte)
 	if !ok || placementBytes == nil {
-		return nil, errAgentNotRegistered
+		return nil, registry.ErrAgentNotRegistered
 	}
 
 	var placement registry.AgentPlacement
@@ -269,7 +291,7 @@ func (b *Backend) getRelay(ctx context.Context, relayID string) (registry.Relay,
 	}
 	relayBytes, ok := raw.([]byte)
 	if !ok || relayBytes == nil {
-		return registry.Relay{}, errRelayNotRegistered
+		return registry.Relay{}, registry.ErrRelayNotRegistered
 	}
 
 	var relay registry.Relay
@@ -286,7 +308,7 @@ func (b *Backend) getAgent(ctx context.Context, agentID string) (registry.Agent,
 	}
 	agentBytes, ok := raw.([]byte)
 	if !ok || agentBytes == nil {
-		return registry.Agent{}, errAgentNotRegistered
+		return registry.Agent{}, registry.ErrAgentNotRegistered
 	}
 
 	var agent registry.Agent
@@ -297,20 +319,35 @@ func (b *Backend) getAgent(ctx context.Context, agentID string) (registry.Agent,
 }
 
 func (b *Backend) Close(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.conn != nil {
+		err := b.conn.Close()
+		b.conn = nil
+		b.reader = nil
+		return err
+	}
 	return nil
 }
 
-func (b *Backend) exec(ctx context.Context, args ...string) (any, error) {
+// ensureConn establishes and authenticates a persistent connection if one
+// does not already exist. Must be called with b.mu held.
+func (b *Backend) ensureConn(ctx context.Context) error {
+	if b.conn != nil {
+		return nil
+	}
+
 	d := net.Dialer{}
 	conn, err := d.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", b.cfg.Address, b.cfg.Port))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer conn.Close()
 
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
+
+	reader := bufio.NewReader(conn)
 
 	if b.cfg.Password != "" {
 		authArgs := []string{"AUTH", b.cfg.Password}
@@ -318,29 +355,119 @@ func (b *Backend) exec(ctx context.Context, args ...string) (any, error) {
 			authArgs = []string{"AUTH", b.cfg.Username, b.cfg.Password}
 		}
 		if _, err := writeRESP(conn, authArgs...); err != nil {
-			return nil, err
+			conn.Close()
+			return err
 		}
-		if _, err := readRESP(bufio.NewReader(conn)); err != nil {
-			return nil, err
+		if _, err := readRESP(reader); err != nil {
+			conn.Close()
+			return err
 		}
 	}
 	if b.cfg.DB > 0 {
 		if _, err := writeRESP(conn, "SELECT", strconv.Itoa(b.cfg.DB)); err != nil {
-			return nil, err
+			conn.Close()
+			return err
 		}
-		if _, err := readRESP(bufio.NewReader(conn)); err != nil {
-			return nil, err
+		if _, err := readRESP(reader); err != nil {
+			conn.Close()
+			return err
 		}
 	}
 
-	reader := bufio.NewReader(conn)
-	if _, err := writeRESP(conn, args...); err != nil {
-		return nil, err
-	}
-	return readRESP(reader)
+	b.conn = conn
+	b.reader = reader
+	return nil
 }
 
-func writeRESP(conn net.Conn, args ...string) (int, error) {
+// closeConn tears down the persistent connection. Must be called with b.mu held.
+func (b *Backend) closeConn() {
+	if b.conn != nil {
+		b.conn.Close()
+		b.conn = nil
+		b.reader = nil
+	}
+}
+
+// exec sends a single command over the persistent connection.
+func (b *Backend) exec(ctx context.Context, args ...string) (any, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if err := b.ensureConn(ctx); err != nil {
+		return nil, err
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = b.conn.SetDeadline(deadline)
+	}
+
+	if _, err := writeRESP(b.conn, args...); err != nil {
+		b.closeConn()
+		return nil, err
+	}
+	res, err := readRESP(b.reader)
+	if err != nil {
+		b.closeConn()
+		return nil, err
+	}
+	return res, nil
+}
+
+// execMulti wraps multiple commands in a MULTI/EXEC transaction for atomicity.
+func (b *Backend) execMulti(ctx context.Context, cmds [][]string) ([]any, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if err := b.ensureConn(ctx); err != nil {
+		return nil, err
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = b.conn.SetDeadline(deadline)
+	}
+
+	// MULTI
+	if _, err := writeRESP(b.conn, "MULTI"); err != nil {
+		b.closeConn()
+		return nil, err
+	}
+	if _, err := readRESP(b.reader); err != nil {
+		b.closeConn()
+		return nil, err
+	}
+
+	// Queue each command
+	for _, cmd := range cmds {
+		if _, err := writeRESP(b.conn, cmd...); err != nil {
+			b.closeConn()
+			return nil, err
+		}
+		// Read +QUEUED
+		if _, err := readRESP(b.reader); err != nil {
+			b.closeConn()
+			return nil, err
+		}
+	}
+
+	// EXEC
+	if _, err := writeRESP(b.conn, "EXEC"); err != nil {
+		b.closeConn()
+		return nil, err
+	}
+	execResult, err := readRESP(b.reader)
+	if err != nil {
+		b.closeConn()
+		return nil, err
+	}
+
+	results, ok := execResult.([]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected EXEC response type: %T", execResult)
+	}
+	return results, nil
+}
+
+func writeRESP(w io.Writer, args ...string) (int, error) {
 	var b strings.Builder
 	b.WriteString("*")
 	b.WriteString(strconv.Itoa(len(args)))
@@ -352,7 +479,7 @@ func writeRESP(conn net.Conn, args ...string) (int, error) {
 		b.WriteString(arg)
 		b.WriteString("\r\n")
 	}
-	return conn.Write([]byte(b.String()))
+	return w.Write([]byte(b.String()))
 }
 
 func readRESP(r *bufio.Reader) (any, error) {

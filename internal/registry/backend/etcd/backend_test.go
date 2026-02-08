@@ -71,16 +71,37 @@ func TestValidationAndContextErrors(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := backend.RegisterRelay(ctx, registry.Relay{}); err == nil {
-		t.Fatalf("expected non-nil error, got %v", err)
+	if err := backend.RegisterRelay(ctx, registry.Relay{}); !errors.Is(err, registry.ErrRelayIDEmpty) {
+		t.Fatalf("expected ErrRelayIDEmpty, got %v", err)
 	}
-	if err := backend.HeartbeatAgent(ctx, "", time.Now()); err == nil {
-		t.Fatalf("expected non-nil error, got %v", err)
+	if err := backend.HeartbeatAgent(ctx, "", time.Now()); !errors.Is(err, registry.ErrAgentIDEmpty) {
+		t.Fatalf("expected ErrAgentIDEmpty, got %v", err)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := backend.RemoveRelay(canceled, "relay-1"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
+
+func TestNotRegisteredErrors(t *testing.T) {
+	backend, err := New(&registry.EtcdConfig{})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	ctx := context.Background()
+
+	if err := backend.HeartbeatRelay(ctx, "missing", time.Now()); !errors.Is(err, registry.ErrRelayNotRegistered) {
+		t.Fatalf("expected ErrRelayNotRegistered, got %v", err)
+	}
+
+	if err := backend.RemoveRelay(ctx, "missing"); !errors.Is(err, registry.ErrRelayNotRegistered) {
+		t.Fatalf("expected ErrRelayNotRegistered, got %v", err)
+	}
+
+	if _, err := backend.GetAgentPlacement(ctx, "missing"); !errors.Is(err, registry.ErrAgentNotRegistered) {
+		t.Fatalf("expected ErrAgentNotRegistered, got %v", err)
 	}
 }

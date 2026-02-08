@@ -3,8 +3,6 @@ package consul
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -20,11 +18,6 @@ type Backend struct {
 	placements map[string]registry.AgentPlacement
 }
 
-var (
-	errRelayNotRegistered = errors.New("relay not registered")
-	errAgentNotRegistered = errors.New("agent not registered")
-)
-
 func New(cfg *registry.ConsulConfig) (*Backend, error) {
 	return &Backend{
 		cfg:        cfg,
@@ -39,7 +32,7 @@ func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error
 		return err
 	}
 	if relay.ID == "" {
-		return fmt.Errorf("relay id is empty")
+		return registry.ErrRelayIDEmpty
 	}
 	if relay.LastSeen.IsZero() {
 		relay.LastSeen = time.Now()
@@ -56,7 +49,7 @@ func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string, ts time.Ti
 		return err
 	}
 	if relayID == "" {
-		return fmt.Errorf("relay id is empty")
+		return registry.ErrRelayIDEmpty
 	}
 	if ts.IsZero() {
 		ts = time.Now()
@@ -67,7 +60,7 @@ func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string, ts time.Ti
 
 	relay, ok := b.relays[relayID]
 	if !ok {
-		return errRelayNotRegistered
+		return registry.ErrRelayNotRegistered
 	}
 	relay.LastSeen = ts
 	b.relays[relayID] = relay
@@ -94,14 +87,14 @@ func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 		return err
 	}
 	if relayID == "" {
-		return fmt.Errorf("relay id is empty")
+		return registry.ErrRelayIDEmpty
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if _, ok := b.relays[relayID]; !ok {
-		return errRelayNotRegistered
+		return registry.ErrRelayNotRegistered
 	}
 	delete(b.relays, relayID)
 	return nil
@@ -112,10 +105,10 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 		return err
 	}
 	if relayID == "" {
-		return fmt.Errorf("relay id is empty")
+		return registry.ErrRelayIDEmpty
 	}
 	if agent.ID == "" {
-		return fmt.Errorf("agent id is empty")
+		return registry.ErrAgentIDEmpty
 	}
 	if agent.LastHeartbeat.IsZero() {
 		agent.LastHeartbeat = time.Now()
@@ -125,7 +118,7 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 	defer b.mu.Unlock()
 
 	if _, ok := b.relays[relayID]; !ok {
-		return errRelayNotRegistered
+		return registry.ErrRelayNotRegistered
 	}
 	b.agents[agent.ID] = agent
 	b.placements[agent.ID] = registry.AgentPlacement{
@@ -141,7 +134,7 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string, ts time.Ti
 		return err
 	}
 	if agentID == "" {
-		return fmt.Errorf("agent id is empty")
+		return registry.ErrAgentIDEmpty
 	}
 	if ts.IsZero() {
 		ts = time.Now()
@@ -152,11 +145,11 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string, ts time.Ti
 
 	agent, ok := b.agents[agentID]
 	if !ok {
-		return errAgentNotRegistered
+		return registry.ErrAgentNotRegistered
 	}
 	placement, ok := b.placements[agentID]
 	if !ok {
-		return errAgentNotRegistered
+		return registry.ErrAgentNotRegistered
 	}
 
 	agent.LastHeartbeat = ts
@@ -171,7 +164,7 @@ func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*regis
 		return nil, err
 	}
 	if agentID == "" {
-		return nil, fmt.Errorf("agent id is empty")
+		return nil, registry.ErrAgentIDEmpty
 	}
 
 	b.mu.RLock()
@@ -179,7 +172,7 @@ func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*regis
 
 	placement, ok := b.placements[agentID]
 	if !ok {
-		return nil, errAgentNotRegistered
+		return nil, registry.ErrAgentNotRegistered
 	}
 	out := placement
 	return &out, nil

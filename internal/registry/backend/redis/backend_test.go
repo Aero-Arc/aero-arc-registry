@@ -25,8 +25,7 @@ func TestNewRequiresValidConfig(t *testing.T) {
 }
 
 func TestRelayAndAgentLifecycle(t *testing.T) {
-	b := &Backend{cfg: &registry.RedisConfig{Address: "fake", Port: 6379}}
-	b.do = newFakeRedisDoer()
+	b := newTestBackend()
 	ctx := context.Background()
 	now := time.Now()
 
@@ -76,17 +75,19 @@ func TestRelayAndAgentLifecycle(t *testing.T) {
 }
 
 func TestValidationErrorsAndContext(t *testing.T) {
-	b := &Backend{cfg: &registry.RedisConfig{Address: "fake", Port: 6379}}
-	b.do = newFakeRedisDoer()
-
+	b := newTestBackend()
 	ctx := context.Background()
 
-	if err := b.RegisterRelay(ctx, registry.Relay{}); err == nil {
-		t.Fatal("expected error for empty relay id")
+	if err := b.RegisterRelay(ctx, registry.Relay{}); !errors.Is(err, registry.ErrRelayIDEmpty) {
+		t.Fatalf("expected ErrRelayIDEmpty, got %v", err)
 	}
 
-	if err := b.RegisterAgent(ctx, registry.Agent{}, "relay-1"); err == nil {
-		t.Fatal("expected error for empty agent id")
+	if err := b.RegisterAgent(ctx, registry.Agent{}, "relay-1"); !errors.Is(err, registry.ErrAgentIDEmpty) {
+		t.Fatalf("expected ErrAgentIDEmpty, got %v", err)
+	}
+
+	if err := b.HeartbeatAgent(ctx, "", time.Now()); !errors.Is(err, registry.ErrAgentIDEmpty) {
+		t.Fatalf("expected ErrAgentIDEmpty, got %v", err)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
@@ -94,6 +95,31 @@ func TestValidationErrorsAndContext(t *testing.T) {
 	if err := b.HeartbeatRelay(canceled, "relay-1", time.Now()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
 	}
+}
+
+func TestNotRegisteredErrors(t *testing.T) {
+	b := newTestBackend()
+	ctx := context.Background()
+
+	if err := b.HeartbeatRelay(ctx, "missing", time.Now()); !errors.Is(err, registry.ErrRelayNotRegistered) {
+		t.Fatalf("expected ErrRelayNotRegistered, got %v", err)
+	}
+
+	if err := b.RemoveRelay(ctx, "missing"); !errors.Is(err, registry.ErrRelayNotRegistered) {
+		t.Fatalf("expected ErrRelayNotRegistered, got %v", err)
+	}
+
+	if _, err := b.GetAgentPlacement(ctx, "missing"); !errors.Is(err, registry.ErrAgentNotRegistered) {
+		t.Fatalf("expected ErrAgentNotRegistered, got %v", err)
+	}
+}
+
+func newTestBackend() *Backend {
+	b := &Backend{cfg: &registry.RedisConfig{Address: "fake", Port: 6379}}
+	fake := newFakeRedisDoer()
+	b.do = fake
+	b.doMulti = newFakeRedisMultiDoer(fake)
+	return b
 }
 
 func newFakeRedisDoer() func(ctx context.Context, args ...string) (any, error) {
@@ -115,6 +141,16 @@ func newFakeRedisDoer() func(ctx context.Context, args ...string) (any, error) {
 				return nil, nil
 			}
 			return []byte(v), nil
+		case "MGET":
+			results := make([]any, 0, len(args)-1)
+			for _, key := range args[1:] {
+				if v, ok := kv[key]; ok {
+					results = append(results, []byte(v))
+				} else {
+					results = append(results, nil)
+				}
+			}
+			return results, nil
 		case "SADD":
 			k := args[1]
 			if _, ok := sets[k]; !ok {
@@ -156,6 +192,20 @@ func newFakeRedisDoer() func(ctx context.Context, args ...string) (any, error) {
 		default:
 			return nil, fmt.Errorf("unsupported command: %s", cmd)
 		}
+	}
+}
+
+func newFakeRedisMultiDoer(do func(ctx context.Context, args ...string) (any, error)) func(ctx context.Context, cmds [][]string) ([]any, error) {
+	return func(ctx context.Context, cmds [][]string) ([]any, error) {
+		results := make([]any, len(cmds))
+		for i, cmd := range cmds {
+			res, err := do(ctx, cmd...)
+			if err != nil {
+				return nil, err
+			}
+			results[i] = res
+		}
+		return results, nil
 	}
 }
 
