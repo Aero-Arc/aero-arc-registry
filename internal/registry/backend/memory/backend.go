@@ -10,10 +10,11 @@ import (
 )
 
 type Backend struct {
-	cfg        *registry.MemoryConfig
-	relays     map[string]*relayEntry
-	agents     map[string]*agentEntry
-	placements map[string]*registry.AgentPlacement
+	cfg         *registry.MemoryConfig
+	relays      map[string]*relayEntry
+	agents      map[string]*agentEntry
+	placements  map[string]*registry.AgentPlacement
+	relayAgents map[string]map[string]*agentEntry
 
 	// Lock order: relayMu -> agentMu -> entry.mu
 	// - relays map guarded by relayMu
@@ -35,10 +36,11 @@ type agentEntry struct {
 
 func New(cfg *registry.MemoryConfig) (*Backend, error) {
 	return &Backend{
-		cfg:        cfg,
-		relays:     make(map[string]*relayEntry),
-		agents:     make(map[string]*agentEntry),
-		placements: make(map[string]*registry.AgentPlacement),
+		cfg:         cfg,
+		relays:      make(map[string]*relayEntry),
+		agents:      make(map[string]*agentEntry),
+		placements:  make(map[string]*registry.AgentPlacement),
+		relayAgents: make(map[string]map[string]*agentEntry),
 	}, nil
 }
 
@@ -155,6 +157,7 @@ func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 		return errRelayNotRegistered
 	}
 	delete(b.relays, relayID)
+	delete(b.relayAgents, relayID)
 
 	return nil
 }
@@ -184,11 +187,7 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 		entry.mu.Unlock()
 
 		b.agentMu.Lock()
-		b.placements[agent.ID] = &registry.AgentPlacement{
-			AgentID:   agent.ID,
-			RelayID:   relayID,
-			UpdatedAt: now,
-		}
+		b.setPlacementLocked(agent.ID, relayID, entry, now)
 		b.agentMu.Unlock()
 
 		return nil
@@ -210,22 +209,14 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 		existing.mu.Unlock()
 
 		b.agentMu.Lock()
-		b.placements[agent.ID] = &registry.AgentPlacement{
-			AgentID:   agent.ID,
-			RelayID:   relayID,
-			UpdatedAt: now,
-		}
+		b.setPlacementLocked(agent.ID, relayID, existing, now)
 		b.agentMu.Unlock()
 
 		return nil
 	}
 
 	b.agents[agent.ID] = newEntry
-	b.placements[agent.ID] = &registry.AgentPlacement{
-		AgentID:   agent.ID,
-		RelayID:   relayID,
-		UpdatedAt: now,
-	}
+	b.setPlacementLocked(agent.ID, relayID, newEntry, now)
 	b.agentMu.Unlock()
 
 	return nil
@@ -305,11 +296,90 @@ func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 }
 
 func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*registry.Agent, error) {
-	return nil, registry.ErrNotImplemented
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	b.relayMu.RLock()
+	_, relayExists := b.relays[relayID]
+	b.relayMu.RUnlock()
+	if !relayExists {
+		return nil, errRelayNotRegistered
+	}
+
+	b.agentMu.RLock()
+	relayAgentEntries := b.relayAgents[relayID]
+	entries := make([]*agentEntry, 0, len(relayAgentEntries))
+	for _, entry := range relayAgentEntries {
+		entries = append(entries, entry)
+	}
+	b.agentMu.RUnlock()
+
+	agents := make([]*registry.Agent, 0, len(entries))
+	for _, entry := range entries {
+		entry.mu.Lock()
+		agentCopy := *entry.agent
+		entry.mu.Unlock()
+
+		agents = append(agents, &agentCopy)
+	}
+
+	return agents, nil
 }
 
 func (b *Backend) RemoveAgents(ctx context.Context, agentIDs []string) error {
-	return registry.ErrNotImplemented
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	b.agentMu.Lock()
+	defer b.agentMu.Unlock()
+
+	for _, agentID := range agentIDs {
+		placement, hasPlacement := b.placements[agentID]
+		if hasPlacement {
+			if relayEntries, ok := b.relayAgents[placement.RelayID]; ok {
+				delete(relayEntries, agentID)
+				if len(relayEntries) == 0 {
+					delete(b.relayAgents, placement.RelayID)
+				}
+			}
+		}
+
+		delete(b.placements, agentID)
+		delete(b.agents, agentID)
+	}
+
+	return nil
+}
+
+func (b *Backend) setPlacementLocked(agentID, relayID string, entry *agentEntry, now time.Time) {
+	if oldPlacement, ok := b.placements[agentID]; ok {
+		if oldRelayEntries, ok := b.relayAgents[oldPlacement.RelayID]; ok {
+			delete(oldRelayEntries, agentID)
+			if len(oldRelayEntries) == 0 {
+				delete(b.relayAgents, oldPlacement.RelayID)
+			}
+		}
+	}
+
+	b.placements[agentID] = &registry.AgentPlacement{
+		AgentID:   agentID,
+		RelayID:   relayID,
+		UpdatedAt: now,
+	}
+
+	relayEntries, exists := b.relayAgents[relayID]
+	if !exists {
+		relayEntries = make(map[string]*agentEntry)
+		b.relayAgents[relayID] = relayEntries
+	}
+
+	relayEntries[agentID] = entry
 }
 
 func (b *Backend) Close(ctx context.Context) error {
