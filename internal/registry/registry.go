@@ -23,11 +23,21 @@ package registry
 
 import (
 	"context"
+	"errors"
+	"log/slog"
+	"math/rand/v2"
+	"sync/atomic"
+	"time"
+
+	"github.com/Aero-Arc/aero-arc-registry/pkg/utils"
 )
 
 type Registry struct {
 	cfg     *Config
 	backend Backend
+
+	ttlLoopRunning       atomic.Bool
+	ttlCleanupInProgress atomic.Bool
 }
 
 func New(cfg *Config, backend Backend) (*Registry, error) {
@@ -77,6 +87,250 @@ func (r *Registry) GetAgentPlacement(ctx context.Context, agentID string) (*Agen
 
 func (r *Registry) ListAgents(ctx context.Context) ([]Agent, error) {
 	return r.backend.ListAgents(ctx)
+}
+
+func (r *Registry) ListRelayAgents(ctx context.Context, relayID string) ([]*Agent, error) {
+	return r.backend.ListRelayAgents(ctx, relayID)
+}
+
+func (r *Registry) RemoveAgents(ctx context.Context, agentIDs []string) error {
+	return r.backend.RemoveAgents(ctx, agentIDs)
+}
+
+func (r *Registry) RunTTL(ctx context.Context) {
+	if !r.ttlLoopRunning.CompareAndSwap(false, true) {
+		slog.LogAttrs(ctx, slog.LevelWarn, "ttl loop already running; ignoring duplicate call",
+			slog.String("method", "RunTTL"),
+		)
+		return
+	}
+
+	go func() {
+		defer r.ttlLoopRunning.Store(false)
+
+		timer := time.NewTimer(r.nextTTLCleanupInterval())
+		defer timer.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				if err := r.runTTLCleanup(ctx, time.Now()); err != nil && !errorsIsContextCancellation(err) {
+					slog.LogAttrs(ctx, slog.LevelError, "ttl cleanup pass failed",
+						slog.String("method", "runTTLCleanup"),
+						slog.String("error", err.Error()),
+					)
+				}
+				timer.Reset(r.nextTTLCleanupInterval())
+			}
+		}
+	}()
+}
+
+func (r *Registry) runTTLCleanup(ctx context.Context, now time.Time) error {
+	if !r.ttlCleanupInProgress.CompareAndSwap(false, true) {
+		slog.LogAttrs(ctx, slog.LevelDebug, "ttl cleanup skipped; previous cleanup still in progress",
+			slog.String("method", "runTTLCleanup"),
+			slog.Bool("skipped_in_progress", true),
+		)
+		return nil
+	}
+	defer r.ttlCleanupInProgress.Store(false)
+
+	start := time.Now()
+	staleRelaysRemoved := 0
+	staleAgentsRemoved := 0
+	errs := &utils.ErrorRecorder{}
+	defer func() {
+		level := slog.LevelInfo
+		if errs.HasErrors() {
+			level = slog.LevelWarn
+		}
+
+		slog.LogAttrs(ctx, level, "ttl cleanup completed",
+			slog.String("method", "runTTLCleanup"),
+			slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+			slog.Int("stale_relays_removed", staleRelaysRemoved),
+			slog.Int("stale_agents_removed", staleAgentsRemoved),
+			slog.Int("errors_count", errs.Len()),
+			slog.Bool("skipped_in_progress", false),
+		)
+	}()
+
+	relays, err := r.backend.ListRelays(ctx)
+	if err != nil {
+		errs.Record(err)
+		return errs.Err()
+	}
+
+	for _, relay := range relays {
+		if now.Sub(relay.LastSeen) >= r.cfg.TTL.Relay {
+			stillStale, err := r.isRelayStillStale(ctx, relay.ID, time.Now())
+			if err != nil {
+				errs.Record(err)
+				continue
+			}
+			if !stillStale {
+				continue
+			}
+
+			removedAgents, err := r.removeRelayAgents(ctx, relay.ID)
+			if err != nil {
+				errs.Record(err)
+			} else {
+				staleAgentsRemoved += removedAgents
+			}
+
+			if err := r.RemoveRelay(ctx, relay.ID); err != nil {
+				errs.Record(err)
+			} else {
+				staleRelaysRemoved++
+			}
+			continue
+		}
+
+		relayAgents, err := r.backend.ListRelayAgents(ctx, relay.ID)
+		if err != nil {
+			errs.Record(err)
+			continue
+		}
+
+		agentIDs := make([]string, 0, len(relayAgents))
+		for _, agent := range relayAgents {
+			if now.Sub(agent.LastHeartbeat) >= r.cfg.TTL.Agent {
+				agentIDs = append(agentIDs, agent.ID)
+			}
+		}
+
+		if len(agentIDs) > 0 {
+			agentIDs, err = r.filterStillStaleAgents(ctx, agentIDs, time.Now())
+			if err != nil {
+				errs.Record(err)
+				continue
+			}
+		}
+
+		if len(agentIDs) > 0 {
+			if err := r.backend.RemoveAgents(ctx, agentIDs); err != nil {
+				errs.Record(err)
+			} else {
+				staleAgentsRemoved += len(agentIDs)
+			}
+		}
+	}
+
+	agents, err := r.backend.ListAgents(ctx)
+	if err != nil {
+		errs.Record(err)
+		return errs.Err()
+	}
+
+	staleAgentIDs := make([]string, 0)
+	for _, agent := range agents {
+		if now.Sub(agent.LastHeartbeat) >= r.cfg.TTL.Agent {
+			staleAgentIDs = append(staleAgentIDs, agent.ID)
+		}
+	}
+
+	if len(staleAgentIDs) > 0 {
+		staleAgentIDs, err = r.filterStillStaleAgents(ctx, staleAgentIDs, time.Now())
+		if err != nil {
+			errs.Record(err)
+			return errs.Err()
+		}
+	}
+
+	if len(staleAgentIDs) > 0 {
+		if err := r.backend.RemoveAgents(ctx, staleAgentIDs); err != nil {
+			errs.Record(err)
+		} else {
+			staleAgentsRemoved += len(staleAgentIDs)
+		}
+	}
+
+	return errs.Err()
+}
+
+func (r *Registry) nextTTLCleanupInterval() time.Duration {
+	ttl := min(r.cfg.TTL.Relay, r.cfg.TTL.Agent)
+	maxJitter := ttl / 10
+
+	if maxJitter <= 0 {
+		return ttl
+	}
+
+	return ttl + time.Duration(rand.Int64N(int64(maxJitter)+1))
+}
+
+func (r *Registry) removeRelayAgents(ctx context.Context, relayID string) (int, error) {
+	agents, err := r.backend.ListRelayAgents(ctx, relayID)
+	if err != nil {
+		return 0, err
+	}
+
+	agentIDs := []string{}
+
+	for _, agent := range agents {
+		agentIDs = append(agentIDs, agent.ID)
+	}
+
+	if len(agentIDs) == 0 {
+		return 0, nil
+	}
+
+	if err := r.backend.RemoveAgents(ctx, agentIDs); err != nil {
+		return 0, err
+	}
+
+	return len(agentIDs), nil
+}
+
+func (r *Registry) isRelayStillStale(ctx context.Context, relayID string, now time.Time) (bool, error) {
+	relays, err := r.backend.ListRelays(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	for _, relay := range relays {
+		if relay.ID == relayID {
+			return now.Sub(relay.LastSeen) >= r.cfg.TTL.Relay, nil
+		}
+	}
+
+	return false, nil
+}
+
+func (r *Registry) filterStillStaleAgents(ctx context.Context, candidateIDs []string, now time.Time) ([]string, error) {
+	if len(candidateIDs) == 0 {
+		return nil, nil
+	}
+
+	agents, err := r.backend.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := make(map[string]struct{}, len(candidateIDs))
+	for _, id := range candidateIDs {
+		candidates[id] = struct{}{}
+	}
+
+	stale := make([]string, 0, len(candidateIDs))
+	for _, agent := range agents {
+		if _, ok := candidates[agent.ID]; !ok {
+			continue
+		}
+		if now.Sub(agent.LastHeartbeat) >= r.cfg.TTL.Agent {
+			stale = append(stale, agent.ID)
+		}
+	}
+
+	return stale, nil
+}
+
+func errorsIsContextCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (r *Registry) Close(ctx context.Context) error {

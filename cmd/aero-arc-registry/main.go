@@ -140,6 +140,8 @@ func RunRegistry(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	aeroRegistry.RunTTL(signalCtx)
+
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d",
 		cfg.GRPC.ListenAddress,
 		cfg.GRPC.ListenPort,
