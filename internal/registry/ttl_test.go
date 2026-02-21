@@ -26,6 +26,9 @@ func TestRunTTLCleanupRelayFirstThenLeftoverAgents(t *testing.T) {
 	backend.relayAgents["relay-fresh"] = map[string]struct{}{
 		"agent-fresh": {},
 	}
+	backend.placements["agent-under-stale-relay"] = "relay-stale"
+	backend.placements["agent-leftover-stale"] = "relay-leftover"
+	backend.placements["agent-fresh"] = "relay-fresh"
 
 	reg := &Registry{
 		cfg: &Config{
@@ -124,10 +127,47 @@ func TestRunTTLCleanupDoesNotRemoveRelayRefreshedDuringCleanup(t *testing.T) {
 	}
 }
 
+func TestRunTTLCleanupDoesNotRemoveAgentMovedToAnotherRelay(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+
+	backend := newTTLCleanupBackend()
+	backend.relays["relay-stale"] = Relay{ID: "relay-stale", LastSeen: now.Add(-45 * time.Second)}
+	backend.relays["relay-fresh"] = Relay{ID: "relay-fresh", LastSeen: now.Add(-5 * time.Second)}
+	backend.agents["agent-moved"] = Agent{ID: "agent-moved", LastHeartbeat: now.Add(-1 * time.Second)}
+
+	// Simulate stale-relay snapshot containing the agent while placement already moved.
+	backend.relayAgents["relay-stale"] = map[string]struct{}{
+		"agent-moved": {},
+	}
+	backend.relayAgents["relay-fresh"] = map[string]struct{}{
+		"agent-moved": {},
+	}
+	backend.placements["agent-moved"] = "relay-fresh"
+
+	reg := &Registry{
+		cfg: &Config{
+			TTL: TTLConfig{
+				Relay: 30 * time.Second,
+				Agent: 30 * time.Second,
+			},
+		},
+		backend: backend,
+	}
+
+	if err := reg.runTTLCleanup(context.Background(), now); err != nil {
+		t.Fatalf("runTTLCleanup returned error: %v", err)
+	}
+
+	if _, exists := backend.agents["agent-moved"]; !exists {
+		t.Fatalf("agent-moved should not be removed when current placement is relay-fresh")
+	}
+}
+
 type ttlCleanupBackend struct {
 	mu          sync.Mutex
 	relays      map[string]Relay
 	agents      map[string]Agent
+	placements  map[string]string
 	relayAgents map[string]map[string]struct{}
 	callLog     []string
 
@@ -141,6 +181,7 @@ func newTTLCleanupBackend() *ttlCleanupBackend {
 	return &ttlCleanupBackend{
 		relays:      make(map[string]Relay),
 		agents:      make(map[string]Agent),
+		placements:  make(map[string]string),
 		relayAgents: make(map[string]map[string]struct{}),
 	}
 }
@@ -186,7 +227,19 @@ func (b *ttlCleanupBackend) HeartbeatAgent(ctx context.Context, agentID string) 
 }
 
 func (b *ttlCleanupBackend) GetAgentPlacement(ctx context.Context, agentID string) (*AgentPlacement, error) {
-	return nil, nil
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	relayID, exists := b.placements[agentID]
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	return &AgentPlacement{
+		AgentID:   agentID,
+		RelayID:   relayID,
+		UpdatedAt: time.Now(),
+	}, nil
 }
 
 func (b *ttlCleanupBackend) ListAgents(ctx context.Context) ([]Agent, error) {
@@ -244,6 +297,7 @@ func (b *ttlCleanupBackend) RemoveAgents(ctx context.Context, agentIDs []string)
 
 	for _, agentID := range ids {
 		delete(b.agents, agentID)
+		delete(b.placements, agentID)
 		for relayID, relayEntries := range b.relayAgents {
 			delete(relayEntries, agentID)
 			if len(relayEntries) == 0 {

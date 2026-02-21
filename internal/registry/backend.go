@@ -12,12 +12,17 @@ type Backend interface {
 	RegisterRelay(ctx context.Context, relay Relay) error
 	HeartbeatRelay(ctx context.Context, relayID string) error
 	ListRelays(ctx context.Context) ([]Relay, error)
+	// TODO(registry-ttl): add indexed stale query APIs for scale:
+	// ListStaleRelays(ctx context.Context, before time.Time) ([]Relay, error)
 
 	// Agent lifecycle
 	RegisterAgent(ctx context.Context, agent Agent, relayID string) error
 	HeartbeatAgent(ctx context.Context, agentID string) error
 	GetAgentPlacement(ctx context.Context, agentID string) (*AgentPlacement, error)
 	ListAgents(ctx context.Context) ([]Agent, error)
+	// TODO(registry-ttl): add indexed stale query + batch placement APIs:
+	// ListStaleAgents(ctx context.Context, before time.Time) ([]Agent, error)
+	// GetAgentPlacements(ctx context.Context, agentIDs []string) (map[string]*AgentPlacement, error)
 
 	// Control Plane Helpers
 	ListRelayAgents(ctx context.Context, relayID string) ([]*Agent, error)

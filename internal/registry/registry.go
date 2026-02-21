@@ -58,10 +58,14 @@ func New(cfg *Config, backend Backend) (*Registry, error) {
 }
 
 func (r *Registry) RegisterRelay(ctx context.Context, relay Relay) error {
+	// TODO(registry-ttl): make registry-owned timestamps authoritative by setting
+	// relay.LastSeen here before persisting, instead of trusting external clocks.
 	return r.backend.RegisterRelay(ctx, relay)
 }
 
 func (r *Registry) HeartbeatRelay(ctx context.Context, relayID string) error {
+	// TODO(registry-ttl): move heartbeat timestamp source of truth to registry
+	// write path (backend should persist registry-assigned time).
 	return r.backend.HeartbeatRelay(ctx, relayID)
 }
 
@@ -78,6 +82,8 @@ func (r *Registry) RegisterAgent(ctx context.Context, agent Agent, relayID strin
 }
 
 func (r *Registry) HeartbeatAgent(ctx context.Context, agentID string) error {
+	// TODO(registry-ttl): move heartbeat timestamp source of truth to registry
+	// write path (backend should persist registry-assigned time).
 	return r.backend.HeartbeatAgent(ctx, agentID)
 }
 
@@ -98,6 +104,8 @@ func (r *Registry) RemoveAgents(ctx context.Context, agentIDs []string) error {
 }
 
 func (r *Registry) RunTTL(ctx context.Context) {
+	// TODO(registry-ttl): evaluate distributed cleanup coordination for large
+	// deployments (leader election, shard ownership, or backend advisory locks).
 	if !r.ttlLoopRunning.CompareAndSwap(false, true) {
 		slog.LogAttrs(ctx, slog.LevelWarn, "ttl loop already running; ignoring duplicate call",
 			slog.String("method", "RunTTL"),
@@ -129,6 +137,13 @@ func (r *Registry) RunTTL(ctx context.Context) {
 }
 
 func (r *Registry) runTTLCleanup(ctx context.Context, now time.Time) error {
+	// TODO(registry-ttl): add metrics instrumentation:
+	// ttl_cleanup_duration_ms, ttl_relays_removed_total, ttl_agents_removed_total,
+	// ttl_skipped_runs_total, ttl_errors_total.
+	// TODO(registry-ttl): evolve immediate deletion to optional soft TTL lifecycle
+	// (ACTIVE -> STALE -> DELETING) with configurable grace period.
+	// TODO(registry-ttl): replace multi-pass scans with a single-pass cleanup model
+	// driven by stale-agent queries and ownership graph cascading.
 	if !r.ttlCleanupInProgress.CompareAndSwap(false, true) {
 		slog.LogAttrs(ctx, slog.LevelDebug, "ttl cleanup skipped; previous cleanup still in progress",
 			slog.String("method", "runTTLCleanup"),
@@ -159,6 +174,8 @@ func (r *Registry) runTTLCleanup(ctx context.Context, now time.Time) error {
 	}()
 
 	relays, err := r.backend.ListRelays(ctx)
+	// TODO(registry-ttl): replace full ListRelays/ListRelayAgents/ListAgents scans
+	// with backend-indexed stale queries to avoid O(N) to O(N^2) chatter at scale.
 	if err != nil {
 		errs.Record(err)
 		return errs.Err()
@@ -237,7 +254,7 @@ func (r *Registry) runTTLCleanup(ctx context.Context, now time.Time) error {
 		staleAgentIDs, err = r.filterStillStaleAgents(ctx, staleAgentIDs, time.Now())
 		if err != nil {
 			errs.Record(err)
-			return errs.Err()
+			staleAgentIDs = nil
 		}
 	}
 
@@ -253,6 +270,8 @@ func (r *Registry) runTTLCleanup(ctx context.Context, now time.Time) error {
 }
 
 func (r *Registry) nextTTLCleanupInterval() time.Duration {
+	// TODO(registry-ttl): make sweep cadence configurable and support adaptive or
+	// backpressure-aware scheduling beyond static TTL + jitter timing.
 	ttl := min(r.cfg.TTL.Relay, r.cfg.TTL.Agent)
 	maxJitter := ttl / 10
 
@@ -275,6 +294,14 @@ func (r *Registry) removeRelayAgents(ctx context.Context, relayID string) (int, 
 		agentIDs = append(agentIDs, agent.ID)
 	}
 
+	if len(agentIDs) == 0 {
+		return 0, nil
+	}
+
+	agentIDs, err = r.filterAgentsStillPlacedOnRelay(ctx, relayID, agentIDs)
+	if err != nil {
+		return 0, err
+	}
 	if len(agentIDs) == 0 {
 		return 0, nil
 	}
@@ -327,6 +354,34 @@ func (r *Registry) filterStillStaleAgents(ctx context.Context, candidateIDs []st
 	}
 
 	return stale, nil
+}
+
+func (r *Registry) filterAgentsStillPlacedOnRelay(ctx context.Context, relayID string, candidateIDs []string) ([]string, error) {
+	if len(candidateIDs) == 0 {
+		return nil, nil
+	}
+
+	errs := &utils.ErrorRecorder{}
+	filtered := make([]string, 0, len(candidateIDs))
+
+	for _, agentID := range candidateIDs {
+		// TODO(registry-ttl): use batch placement lookups to avoid per-agent
+		// GetAgentPlacement roundtrips in large relay fan-outs.
+		placement, err := r.backend.GetAgentPlacement(ctx, agentID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			errs.Record(err)
+			continue
+		}
+
+		if placement.RelayID == relayID {
+			filtered = append(filtered, agentID)
+		}
+	}
+
+	return filtered, errs.Err()
 }
 
 func errorsIsContextCancellation(err error) bool {
