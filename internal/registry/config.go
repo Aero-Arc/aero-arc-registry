@@ -56,6 +56,11 @@ type TTLConfig struct {
 	// Agent defines the maximum allowed duration since the last
 	// heartbeat before an agent is considered unhealthy.
 	Agent time.Duration
+
+	// TODO(registry-ttl): add optional stale grace period to support soft TTL
+	// lifecycle (ACTIVE -> STALE -> DELETING) before hard removal.
+	// TODO(registry-ttl): add configurable TTL sweep interval independent of TTL
+	// values for adaptive/backpressure-aware scheduler evolution.
 }
 
 // BackendConfig defines which registry backend implementation is used
