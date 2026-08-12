@@ -21,14 +21,7 @@ The service-level TTL sweep is disabled for Redis. Redis `TIME` and native key e
 
 All keys use the versioned `{aero-arc-registry}:v1:` namespace. Entity IDs are URL-safe base64 encoded in key names.
 
-| Key | Type | Purpose |
-| --- | --- | --- |
-| `...:relay:<id>` | hash with TTL | Relay address, gRPC port, incarnation, and last heartbeat |
-| `...:agent:<id>` | hash with TTL | Agent heartbeat, current relay placement, and relay incarnation |
-| `...:relays` | sorted set | Relay IDs scored by expiry time |
-| `...:agents` | sorted set | Agent IDs scored by expiry time |
-| `...:relay-agents:<id>` | sorted set | Agent IDs placed on one relay, scored by agent expiry |
-| `...:relay-incarnation-sequence` | integer | Monotonic source for relay incarnation tokens |
+![Redis key model showing TTL-backed relay and agent hashes, expiry-scored indexes, and the relay incarnation sequence](images/redis-key-model.svg)
 
 The namespace contains a Redis hash tag so related keys share a slot. The current client targets a standalone Redis deployment; Redis Cluster is not yet a supported configuration.
 

@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+  <title id="title">Aero Arc Registry Redis key relationships</title>
+  <desc id="desc">Architecture diagram of current registry state in Redis. A monotonic integer sequence issues incarnation tokens to TTL-backed relay hashes. Relays own TTL-backed agent hashes through current placement and captured incarnation. Relay IDs and agent IDs are stored in global sorted sets scored by expiry, while each relay has a sorted-set membership index of its agents scored by agent expiry. All keys share a versioned namespace and encoded IDs.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08111f"/>
+      <stop offset="0.55" stop-color="#111d31"/>
+      <stop offset="1" stop-color="#17243a"/>
+    </linearGradient>
+    <linearGradient id="relayFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4c1320"/>
+      <stop offset="1" stop-color="#251c31"/>
+    </linearGradient>
+    <linearGradient id="agentFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f3e4c"/>
+      <stop offset="1" stop-color="#15283d"/>
+    </linearGradient>
+    <linearGradient id="indexFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#172b43"/>
+      <stop offset="1" stop-color="#19243a"/>
+    </linearGradient>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="145%">
+      <feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#020617" flood-opacity="0.48"/>
+    </filter>
+    <marker id="arrowCoral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#fb7185"/>
+    </marker>
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#67e8f9"/>
+    </marker>
+    <marker id="arrowSlate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <style>
+      .sans { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+      .eyebrow { font: 700 13px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: 1.8px; }
+      .node-title { font: 750 25px Inter, ui-sans-serif, system-ui, sans-serif; fill: #f8fafc; }
+      .key { font: 700 15px "SFMono-Regular", Consolas, "Liberation Mono", monospace; fill: #e2e8f0; }
+      .body { font: 400 15px Inter, ui-sans-serif, system-ui, sans-serif; fill: #cbd5e1; }
+      .small { font: 500 13px Inter, ui-sans-serif, system-ui, sans-serif; fill: #94a3b8; }
+      .edge-label { font: 700 13px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.2px; }
+      .index { fill: url(#indexFill); stroke: #3b506c; stroke-width: 1.5; }
+      .subtle-rule { stroke: #334155; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="900" rx="26" fill="url(#background)"/>
+  <path d="M0 26A26 26 0 0 1 26 0H120V900H26A26 26 0 0 1 0 874Z" fill="#0b1526" opacity="0.9"/>
+  <rect x="0" width="10" height="900" rx="5" fill="#f43f5e"/>
+
+  <text x="56" y="64" class="sans" font-size="31" font-weight="750" fill="#f8fafc">Current state, connected</text>
+  <text x="56" y="95" class="body">How Relay and Agent liveness is represented in Redis</text>
+
+  <rect x="56" y="121" width="1088" height="48" rx="11" fill="#0d192b" stroke="#334155"/>
+  <text x="78" y="151" class="mono" font-size="16" font-weight="700" fill="#fda4af">{aero-arc-registry}:v1:</text>
+  <text x="332" y="151" class="body">shared key namespace</text>
+  <circle cx="516" cy="145" r="3" fill="#64748b"/>
+  <text x="535" y="151" class="body">entity IDs use URL-safe base64 in key names</text>
+
+  <g class="sans">
+    <line x1="770" y1="204" x2="808" y2="204" stroke="#fb7185" stroke-width="3" marker-end="url(#arrowCoral)"/>
+    <text x="819" y="209" class="small">ownership / identity</text>
+    <line x1="974" y1="204" x2="1012" y2="204" stroke="#67e8f9" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#arrowCyan)"/>
+    <text x="1023" y="209" class="small">expiry index</text>
+  </g>
+
+  <!-- Relationship edges are drawn before nodes so they remain visually behind them. -->
+  <path d="M470 346 C560 346 640 346 730 346" fill="none" stroke="#fb7185" stroke-width="4" marker-end="url(#arrowCoral)"/>
+  <rect x="527" y="299" width="146" height="31" rx="15" fill="#3d1725" stroke="#9f2944"/>
+  <text x="600" y="320" text-anchor="middle" class="edge-label" fill="#fecdd3">CURRENT PLACEMENT</text>
+  <text x="600" y="370" text-anchor="middle" class="small" fill="#fda4af">relay ID + captured incarnation</text>
+
+  <path d="M300 438 C300 558 220 566 220 674" fill="none" stroke="#67e8f9" stroke-width="3" stroke-dasharray="8 7" marker-end="url(#arrowCyan)"/>
+  <text x="215" y="574" class="edge-label" fill="#a5f3fc">relay ID</text>
+  <text x="215" y="594" class="small">score = expiry</text>
+
+  <path d="M900 438 C900 558 980 566 980 674" fill="none" stroke="#67e8f9" stroke-width="3" stroke-dasharray="8 7" marker-end="url(#arrowCyan)"/>
+  <text x="923" y="574" class="edge-label" fill="#a5f3fc">agent ID</text>
+  <text x="923" y="594" class="small">score = expiry</text>
+
+  <path d="M470 374 C520 422 532 462 548 510" fill="none" stroke="#fb7185" stroke-width="3" marker-end="url(#arrowCoral)"/>
+  <path d="M730 374 C680 422 668 462 652 510" fill="none" stroke="#67e8f9" stroke-width="3" marker-end="url(#arrowCyan)"/>
+
+  <path d="M500 674 C455 585 395 500 300 438" fill="none" stroke="#fb7185" stroke-width="3" marker-end="url(#arrowCoral)"/>
+  <rect x="395" y="555" width="127" height="28" rx="14" fill="#3d1725" stroke="#9f2944"/>
+  <text x="459" y="574" text-anchor="middle" class="edge-label" fill="#fecdd3">issues token</text>
+
+  <!-- Primary entity nodes. -->
+  <g filter="url(#shadow)">
+    <rect x="110" y="250" width="360" height="188" rx="22" fill="url(#relayFill)" stroke="#e64b68" stroke-width="2"/>
+    <rect x="730" y="250" width="360" height="188" rx="22" fill="url(#agentFill)" stroke="#22b8cf" stroke-width="2"/>
+  </g>
+  <circle cx="148" cy="290" r="17" fill="#f43f5e"/>
+  <path d="M140 290h16M148 282v16" stroke="#fff1f2" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="178" y="299" class="node-title">Relay</text>
+  <rect x="275" y="273" width="170" height="28" rx="14" fill="#881337"/>
+  <text x="360" y="292" text-anchor="middle" class="eyebrow" fill="#fecdd3">HASH · NATIVE TTL</text>
+  <text x="138" y="337" class="key">...:relay:&lt;id&gt;</text>
+  <line x1="138" y1="354" x2="442" y2="354" class="subtle-rule"/>
+  <text x="138" y="382" class="body">Address · gRPC port</text>
+  <text x="138" y="407" class="body">Incarnation · last heartbeat</text>
+
+  <circle cx="768" cy="290" r="17" fill="#0891b2"/>
+  <path d="M760 286h16M760 294h16" stroke="#ecfeff" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="798" y="299" class="node-title">Agent</text>
+  <rect x="895" y="273" width="170" height="28" rx="14" fill="#164e63"/>
+  <text x="980" y="292" text-anchor="middle" class="eyebrow" fill="#a5f3fc">HASH · NATIVE TTL</text>
+  <text x="758" y="337" class="key">...:agent:&lt;id&gt;</text>
+  <line x1="758" y1="354" x2="1062" y2="354" class="subtle-rule"/>
+  <text x="758" y="382" class="body">Heartbeat · current relay placement</text>
+  <text x="758" y="407" class="body">Captured relay incarnation</text>
+
+  <!-- Per-relay membership sits at the center of the relationship. -->
+  <g filter="url(#shadow)">
+    <rect x="445" y="510" width="310" height="126" rx="19" class="index"/>
+  </g>
+  <rect x="469" y="531" width="95" height="25" rx="12" fill="#164e63"/>
+  <text x="517" y="548" text-anchor="middle" class="eyebrow" fill="#a5f3fc">SORTED SET</text>
+  <text x="469" y="585" class="key">...:relay-agents:&lt;id&gt;</text>
+  <text x="469" y="611" class="body">agent IDs · score = agent expiry</text>
+  <text x="540" y="489" text-anchor="end" class="small" fill="#fda4af">one set per relay</text>
+  <text x="660" y="489" class="small" fill="#67e8f9">current agents</text>
+
+  <!-- Supporting stores. -->
+  <g filter="url(#shadow)">
+    <rect x="70" y="674" width="300" height="142" rx="19" class="index"/>
+    <rect x="450" y="674" width="300" height="142" rx="19" fill="#241b36" stroke="#76529b" stroke-width="1.5"/>
+    <rect x="830" y="674" width="300" height="142" rx="19" class="index"/>
+  </g>
+
+  <rect x="94" y="695" width="95" height="25" rx="12" fill="#164e63"/>
+  <text x="142" y="712" text-anchor="middle" class="eyebrow" fill="#a5f3fc">SORTED SET</text>
+  <text x="94" y="752" class="key">...:relays</text>
+  <text x="94" y="779" class="body">relay IDs</text>
+  <text x="94" y="801" class="small">score = expiry time</text>
+
+  <rect x="474" y="695" width="77" height="25" rx="12" fill="#3b0764"/>
+  <text x="513" y="712" text-anchor="middle" class="eyebrow" fill="#e9d5ff">INTEGER</text>
+  <text x="474" y="752" class="key">...:relay-incarnation-</text>
+  <text x="474" y="773" class="key">sequence</text>
+  <text x="474" y="801" class="small">monotonic incarnation source</text>
+
+  <rect x="854" y="695" width="95" height="25" rx="12" fill="#164e63"/>
+  <text x="902" y="712" text-anchor="middle" class="eyebrow" fill="#a5f3fc">SORTED SET</text>
+  <text x="854" y="752" class="key">...:agents</text>
+  <text x="854" y="779" class="body">agent IDs</text>
+  <text x="854" y="801" class="small">score = expiry time</text>
+
+  <rect x="56" y="847" width="1088" height="31" rx="15" fill="#0d192b" stroke="#334155"/>
+  <circle cx="78" cy="862" r="5" fill="#f43f5e"/>
+  <text x="94" y="867" class="small">Native TTL defines entity liveness</text>
+  <circle cx="355" cy="862" r="5" fill="#22d3ee"/>
+  <text x="371" y="867" class="small">Sorted-set scores mirror expiry deadlines</text>
+  <circle cx="709" cy="862" r="5" fill="#a78bfa"/>
+  <text x="725" y="867" class="small">Incarnation fences stale relay ownership</text>
+</svg>
