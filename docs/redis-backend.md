@@ -9,6 +9,10 @@ Redis is the production registry backend. It stores only current control-plane s
 - A relay registration creates a monotonically increasing Redis-issued incarnation when no live hash exists. Idempotent retries and metadata updates preserve the active incarnation and agent membership. Re-creation after expiry or removal receives a new incarnation; agent registrations capture it, and reads and heartbeats reject surviving hashes from the prior relay instance.
 - An agent is live only while both its agent hash and assigned relay hash exist. A relay expiry therefore removes its agents from registry reads immediately, even before the periodic registry sweep runs.
 - Agent registration, reassignment, heartbeat, and removal update the entity, placement, and indexes atomically with Lua scripts. Registration validates the relay's complete hash and unexpired global-index membership before writing any agent state; an invalid target is rejected without disturbing an agent's existing placement.
+- The Lua transaction programs are maintained as embedded source files under
+  `internal/registry/backend/redis/scripts/`. Each file declares the ordered
+  Redis `KEYS` and `ARGV` contract consumed by its Go wrapper; the files are
+  compiled into the Registry binary and require no runtime filesystem assets.
 - Cleanup never executes Redis commands against a membership key merely because an agent hash names it. Scripts derive the canonical registry-owned membership key from a validated relay key and ownership incarnation, and safely repair wrong-type canonical keys without touching arbitrary stored keys.
 - Relay-scoped reads repair only the membership belonging to the relay being listed when they encounter an agent that has moved. They never follow the agent's new placement to delete current state, so a stale relay-list snapshot cannot erase a concurrent reassignment.
 - Agent heartbeats are ownership-scoped: the caller supplies its relay ID, and Redis renews the agent only when that relay is live and still owns the current placement. A stale relay heartbeat cannot move or extend an agent taken over by another relay.
