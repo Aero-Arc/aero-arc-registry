@@ -38,6 +38,7 @@ func TestRedisIntegration(t *testing.T) {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_ = client.Del(cleanupCtx,
+			backend.namespace+"untrusted-membership-sentinel",
 			backend.relayKey("relay-integration"),
 			backend.relayKey("relay-takeover"),
 			backend.relayKey("relay-corrupt"),
@@ -118,6 +119,23 @@ func TestRedisIntegration(t *testing.T) {
 	if err := backend.HeartbeatAgent(ctx, "agent-integration", "relay-takeover"); err != nil {
 		t.Fatalf("HeartbeatAgent(current owner) error = %v", err)
 	}
+	sentinelKey := backend.namespace + "untrusted-membership-sentinel"
+	if err := client.Set(ctx, sentinelKey, "keep", 0).Err(); err != nil {
+		t.Fatalf("create untrusted membership sentinel: %v", err)
+	}
+	if err := client.HSet(ctx, backend.agentKey("agent-integration"), "relay_agents_key", sentinelKey).Err(); err != nil {
+		t.Fatalf("corrupt stored membership key: %v", err)
+	}
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-integration"}, "relay-integration"); err != nil {
+		t.Fatalf("RegisterAgent(reassign with corrupt stored membership) error = %v", err)
+	}
+	if got, err := client.Get(ctx, sentinelKey).Result(); err != nil || got != "keep" {
+		t.Fatalf("untrusted membership key changed: value=%q error=%v", got, err)
+	}
+	if err := client.ZScore(ctx, backend.relayAgentsKey("relay-takeover"), "agent-integration").Err(); !errors.Is(err, redisclient.Nil) {
+		t.Fatalf("canonical old membership remains: %v", err)
+	}
+	assertPlacement(t, backend, "agent-integration", "relay-integration")
 
 	registerRelay(t, backend, "relay-register-corrupt")
 	if err := client.HDel(ctx, backend.relayKey("relay-register-corrupt"), "address").Err(); err != nil {

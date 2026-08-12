@@ -677,6 +677,109 @@ func TestRegisterAgentConcurrentRelayRefreshIsAtomic(t *testing.T) {
 	}
 }
 
+func TestRegisterAgentConstrainStoredMembershipCleanup(t *testing.T) {
+	t.Run("untrusted key is untouched", func(t *testing.T) {
+		backend, _ := newTestBackend(t, time.Minute, time.Minute)
+		ctx := context.Background()
+		registerRelay(t, backend, "relay-a")
+		registerRelay(t, backend, "relay-b")
+		registerAgent(t, backend, "agent-1", "relay-a")
+		sentinelKey := backend.namespace + "unrelated-sentinel"
+		if err := backend.client.Set(ctx, sentinelKey, "keep", 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.client.HSet(ctx, backend.agentKey("agent-1"), "relay_agents_key", sentinelKey).Err(); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-1"}, "relay-b"); err != nil {
+			t.Fatalf("RegisterAgent(reassign) error = %v", err)
+		}
+		if got := backend.client.Get(ctx, sentinelKey).Val(); got != "keep" {
+			t.Fatalf("untrusted key mutated: got %q", got)
+		}
+		assertPlacement(t, backend, "agent-1", "relay-b")
+		assertRelayAgentIDs(t, backend, "relay-a", nil)
+		assertRelayAgentIDs(t, backend, "relay-b", []string{"agent-1"})
+	})
+
+	t.Run("canonical wrongtype is repaired", func(t *testing.T) {
+		backend, _ := newTestBackend(t, time.Minute, time.Minute)
+		ctx := context.Background()
+		registerRelay(t, backend, "relay-a")
+		registerRelay(t, backend, "relay-b")
+		registerAgent(t, backend, "agent-1", "relay-a")
+		oldMembership := backend.relayAgentsKey("relay-a")
+		if err := backend.client.Del(ctx, oldMembership).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.client.Set(ctx, oldMembership, "wrongtype", 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-1"}, "relay-b"); err != nil {
+			t.Fatalf("RegisterAgent(reassign wrongtype) error = %v", err)
+		}
+		if exists := backend.client.Exists(ctx, oldMembership).Val(); exists != 0 {
+			t.Fatal("canonical wrongtype membership was not repaired")
+		}
+		assertPlacement(t, backend, "agent-1", "relay-b")
+		assertRelayAgentIDs(t, backend, "relay-b", []string{"agent-1"})
+	})
+
+	t.Run("wrongtype untrusted relay key is ignored", func(t *testing.T) {
+		backend, _ := newTestBackend(t, time.Minute, time.Minute)
+		ctx := context.Background()
+		registerRelay(t, backend, "relay-a")
+		registerRelay(t, backend, "relay-b")
+		registerAgent(t, backend, "agent-1", "relay-a")
+		sentinelKey := backend.namespace + "unrelated-relay-sentinel"
+		if err := backend.client.Set(ctx, sentinelKey, "keep", 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.client.HSet(ctx, backend.agentKey("agent-1"),
+			"relay_key", sentinelKey,
+			"relay_agents_key", backend.namespace+"unrelated-membership-sentinel",
+		).Err(); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-1"}, "relay-b"); err != nil {
+			t.Fatalf("RegisterAgent(reassign corrupt relay key) error = %v", err)
+		}
+		if got := backend.client.Get(ctx, sentinelKey).Val(); got != "keep" {
+			t.Fatalf("untrusted relay key mutated: got %q", got)
+		}
+		assertPlacement(t, backend, "agent-1", "relay-b")
+	})
+}
+
+func TestRemoveAgentsConstrainStoredMembershipCleanup(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	registerRelay(t, backend, "relay-a")
+	registerAgent(t, backend, "agent-1", "relay-a")
+	sentinelKey := backend.namespace + "remove-sentinel"
+	if err := backend.client.Set(ctx, sentinelKey, "keep", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.client.HSet(ctx, backend.agentKey("agent-1"), "relay_agents_key", sentinelKey).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RemoveAgents(ctx, []string{"agent-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := backend.client.Get(ctx, sentinelKey).Val(); got != "keep" {
+		t.Fatalf("RemoveAgents mutated untrusted key: got %q", got)
+	}
+	if exists := backend.client.Exists(ctx, backend.agentKey("agent-1")).Val(); exists != 0 {
+		t.Fatal("RemoveAgents did not remove agent hash")
+	}
+	if err := backend.client.ZScore(ctx, backend.relayAgentsKey("relay-a"), "agent-1").Err(); !errors.Is(err, redisclient.Nil) {
+		t.Fatalf("RemoveAgents left canonical membership: %v", err)
+	}
+}
+
 func TestAgentHeartbeatRequiresCurrentRelayOwnership(t *testing.T) {
 	backend, server := newTestBackend(t, time.Minute, 5*time.Second)
 	ctx := context.Background()
@@ -1183,7 +1286,7 @@ func TestStaleRelayListCannotDeleteReassignedAgent(t *testing.T) {
 	values, err := readRelayAgentScript.Run(ctx, backend.client, []string{
 		backend.agentKey("agent-1"), backend.agentsKey(), backend.relayAgentsKey("relay-a"),
 		backend.relayKey("relay-a"), backend.relaysKey(),
-	}, "agent-1", "relay-a", staleIncarnation).StringSlice()
+	}, "agent-1", "relay-a", staleIncarnation, backend.relayKeyPrefix(), backend.relayAgentsKeyPrefix()).StringSlice()
 	if err != nil && !errors.Is(err, redisclient.Nil) {
 		t.Fatalf("stale relay read error = %v", err)
 	}
