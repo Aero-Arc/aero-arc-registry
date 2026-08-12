@@ -125,6 +125,129 @@ func TestRelayLifecycle(t *testing.T) {
 	}
 }
 
+func TestRegisterRelayReplacesCorruptIdentityWithValidIncarnation(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	registerRelay(t, backend, "relay-1")
+	registerAgent(t, backend, "agent-old", "relay-1")
+	oldIncarnation := relayIncarnation(t, backend, "relay-1")
+	if err := backend.client.HSet(ctx, backend.relayKey("relay-1"), "incarnation", "invalid").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RegisterRelay(ctx, registry.Relay{ID: "relay-1", Address: "127.0.0.2", GRPCPort: 50052}); err != nil {
+		t.Fatal(err)
+	}
+	newIncarnation := relayIncarnation(t, backend, "relay-1")
+	if newIncarnation == oldIncarnation || newIncarnation == "invalid" {
+		t.Fatalf("RegisterRelay preserved corrupt incarnation: old=%q new=%q", oldIncarnation, newIncarnation)
+	}
+	relays, err := backend.ListRelays(ctx)
+	if err != nil || len(relays) != 1 || relays[0].ID != "relay-1" {
+		t.Fatalf("ListRelays() = %+v, error=%v", relays, err)
+	}
+	assertRelayAgentIDs(t, backend, "relay-1", nil)
+}
+
+func TestHeartbeatRelayRequiresCompleteLiveRecord(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func(context.Context, *Backend, string) error
+	}{
+		{name: "missing hash", corrupt: func(ctx context.Context, b *Backend, id string) error { return b.client.Del(ctx, b.relayKey(id)).Err() }},
+		{name: "wrong id", corrupt: func(ctx context.Context, b *Backend, id string) error {
+			return b.client.HSet(ctx, b.relayKey(id), "id", "other").Err()
+		}},
+		{name: "missing address", corrupt: func(ctx context.Context, b *Backend, id string) error {
+			return b.client.HDel(ctx, b.relayKey(id), "address").Err()
+		}},
+		{name: "invalid port", corrupt: func(ctx context.Context, b *Backend, id string) error {
+			return b.client.HSet(ctx, b.relayKey(id), "grpc_port", "65536").Err()
+		}},
+		{name: "invalid incarnation", corrupt: func(ctx context.Context, b *Backend, id string) error {
+			return b.client.HSet(ctx, b.relayKey(id), "incarnation", "0").Err()
+		}},
+		{name: "invalid timestamp", corrupt: func(ctx context.Context, b *Backend, id string) error {
+			return b.client.HSet(ctx, b.relayKey(id), "last_seen_ms", "9223372036854775808").Err()
+		}},
+		{name: "missing index", corrupt: func(ctx context.Context, b *Backend, id string) error {
+			return b.client.ZRem(ctx, b.relaysKey(), id).Err()
+		}},
+		{name: "expired index", corrupt: func(ctx context.Context, b *Backend, id string) error {
+			return b.client.ZAdd(ctx, b.relaysKey(), redisclient.Z{Score: 0, Member: id}).Err()
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend, _ := newTestBackend(t, time.Minute, time.Minute)
+			ctx := context.Background()
+			registerRelay(t, backend, "relay-healthy")
+			registerRelay(t, backend, "relay-corrupt")
+			registerAgent(t, backend, "agent-on-corrupt", "relay-corrupt")
+			healthyHash := backend.client.HGetAll(ctx, backend.relayKey("relay-healthy")).Val()
+			healthyScore := backend.client.ZScore(ctx, backend.relaysKey(), "relay-healthy").Val()
+			healthyTTL := backend.client.PTTL(ctx, backend.relayKey("relay-healthy")).Val()
+			if err := tt.corrupt(ctx, backend, "relay-corrupt"); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := backend.HeartbeatRelay(ctx, "relay-corrupt"); !errors.Is(err, registry.ErrNotFound) {
+				t.Fatalf("HeartbeatRelay(corrupt) error = %v, want ErrNotFound", err)
+			}
+			if exists := backend.client.Exists(ctx, backend.relayKey("relay-corrupt"), backend.relayAgentsKey("relay-corrupt")).Val(); exists != 0 {
+				t.Fatalf("heartbeat repair left %d corrupt relay keys", exists)
+			}
+			if err := backend.client.ZScore(ctx, backend.relaysKey(), "relay-corrupt").Err(); !errors.Is(err, redisclient.Nil) {
+				t.Fatalf("heartbeat repair left relay index: %v", err)
+			}
+			if got := backend.client.HGetAll(ctx, backend.relayKey("relay-healthy")).Val(); !reflect.DeepEqual(got, healthyHash) {
+				t.Fatalf("rejected heartbeat mutated healthy hash: before=%v after=%v", healthyHash, got)
+			}
+			if got := backend.client.ZScore(ctx, backend.relaysKey(), "relay-healthy").Val(); got != healthyScore {
+				t.Fatalf("rejected heartbeat mutated healthy score: before=%v after=%v", healthyScore, got)
+			}
+			if got := backend.client.PTTL(ctx, backend.relayKey("relay-healthy")).Val(); got != healthyTTL {
+				t.Fatalf("rejected heartbeat mutated healthy TTL: before=%v after=%v", healthyTTL, got)
+			}
+		})
+	}
+}
+
+func TestHeartbeatRelayConcurrentRefreshPreservesValidRecord(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	for i := 0; i < 64; i++ {
+		relayID := fmt.Sprintf("relay-heartbeat-refresh-%d", i)
+		registerRelay(t, backend, relayID)
+		if err := backend.client.HDel(ctx, backend.relayKey(relayID), "address").Err(); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() {
+			<-start
+			errs <- backend.RegisterRelay(ctx, registry.Relay{ID: relayID, Address: "127.0.0.1", GRPCPort: 50051})
+		}()
+		go func() {
+			<-start
+			err := backend.HeartbeatRelay(ctx, relayID)
+			if errors.Is(err, registry.ErrNotFound) {
+				err = nil
+			}
+			errs <- err
+		}()
+		close(start)
+		for range 2 {
+			if err := <-errs; err != nil {
+				t.Fatalf("concurrent relay refresh/heartbeat: %v", err)
+			}
+		}
+		if err := backend.HeartbeatRelay(ctx, relayID); err != nil {
+			t.Fatalf("fresh relay %q was deleted: %v", relayID, err)
+		}
+	}
+}
+
 func TestListRelaysOmitsAndAtomicallyRepairsCorruptRecords(t *testing.T) {
 	backend, _ := newTestBackend(t, 5*time.Second, 5*time.Second)
 	ctx := context.Background()
@@ -467,6 +590,9 @@ func TestAgentHeartbeatRequiresCurrentRelayOwnership(t *testing.T) {
 	}
 	server.FastForward(time.Second)
 	ttlBeforeRejected := server.TTL(backend.agentKey("agent-1"))
+	hashBeforeRejected := backend.client.HGetAll(ctx, backend.agentKey("agent-1")).Val()
+	globalScoreBeforeRejected := backend.client.ZScore(ctx, backend.agentsKey(), "agent-1").Val()
+	ownerScoreBeforeRejected := backend.client.ZScore(ctx, backend.relayAgentsKey("relay-b"), "agent-1").Val()
 	if err := backend.HeartbeatAgent(ctx, "agent-1", "relay-a"); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("old relay heartbeat error = %v, want ErrNotFound", err)
 	}
@@ -479,6 +605,15 @@ func TestAgentHeartbeatRequiresCurrentRelayOwnership(t *testing.T) {
 	}
 	if *placementAfterRejected != *placementAfterTakeover {
 		t.Fatalf("rejected heartbeat mutated placement: before=%+v after=%+v", placementAfterTakeover, placementAfterRejected)
+	}
+	if got := backend.client.HGetAll(ctx, backend.agentKey("agent-1")).Val(); !reflect.DeepEqual(got, hashBeforeRejected) {
+		t.Fatalf("rejected heartbeat mutated agent hash: before=%v after=%v", hashBeforeRejected, got)
+	}
+	if got := backend.client.ZScore(ctx, backend.agentsKey(), "agent-1").Val(); got != globalScoreBeforeRejected {
+		t.Fatalf("rejected heartbeat mutated global score: before=%v after=%v", globalScoreBeforeRejected, got)
+	}
+	if got := backend.client.ZScore(ctx, backend.relayAgentsKey("relay-b"), "agent-1").Val(); got != ownerScoreBeforeRejected {
+		t.Fatalf("rejected heartbeat mutated owner score: before=%v after=%v", ownerScoreBeforeRejected, got)
 	}
 
 	if err := backend.HeartbeatAgent(ctx, "agent-1", "relay-b"); err != nil {
@@ -497,6 +632,118 @@ func TestAgentHeartbeatRequiresCurrentRelayOwnership(t *testing.T) {
 
 	if err := backend.HeartbeatAgent(ctx, "agent-1", "relay-missing"); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("missing relay heartbeat error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestHeartbeatAgentRequiresCompleteLiveAgentAndRelay(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func(context.Context, *Backend) error
+	}{
+		{name: "agent id", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.agentKey("agent-corrupt"), "id", "other").Err()
+		}},
+		{name: "agent heartbeat", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.agentKey("agent-corrupt"), "last_heartbeat_ms", "bad").Err()
+		}},
+		{name: "agent relay id", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.agentKey("agent-corrupt"), "relay_id", "other").Err()
+		}},
+		{name: "agent relay key", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.agentKey("agent-corrupt"), "relay_key", b.relayKey("relay-other")).Err()
+		}},
+		{name: "agent incarnation", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.agentKey("agent-corrupt"), "relay_incarnation", "0").Err()
+		}},
+		{name: "agent membership key", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.agentKey("agent-corrupt"), "relay_agents_key", b.relayAgentsKey("relay-other")).Err()
+		}},
+		{name: "agent placement timestamp", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.agentKey("agent-corrupt"), "placement_updated_ms", "9223372036854775808").Err()
+		}},
+		{name: "agent global index", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.ZRem(ctx, b.agentsKey(), "agent-corrupt").Err()
+		}},
+		{name: "agent membership", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.ZRem(ctx, b.relayAgentsKey("relay-target"), "agent-corrupt").Err()
+		}},
+		{name: "relay id", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.relayKey("relay-target"), "id", "other").Err()
+		}},
+		{name: "relay address", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HDel(ctx, b.relayKey("relay-target"), "address").Err()
+		}},
+		{name: "relay port", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.relayKey("relay-target"), "grpc_port", "bad").Err()
+		}},
+		{name: "relay incarnation", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.relayKey("relay-target"), "incarnation", "0").Err()
+		}},
+		{name: "relay timestamp", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.HSet(ctx, b.relayKey("relay-target"), "last_seen_ms", "bad").Err()
+		}},
+		{name: "relay index", corrupt: func(ctx context.Context, b *Backend) error {
+			return b.client.ZRem(ctx, b.relaysKey(), "relay-target").Err()
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend, _ := newTestBackend(t, time.Minute, time.Minute)
+			ctx := context.Background()
+			registerRelay(t, backend, "relay-target")
+			registerRelay(t, backend, "relay-other")
+			registerAgent(t, backend, "agent-corrupt", "relay-target")
+			if err := tt.corrupt(ctx, backend); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.HeartbeatAgent(ctx, "agent-corrupt", "relay-target"); !errors.Is(err, registry.ErrNotFound) {
+				t.Fatalf("HeartbeatAgent(corrupt) error = %v, want ErrNotFound", err)
+			}
+			if exists := backend.client.Exists(ctx, backend.agentKey("agent-corrupt")).Val(); exists != 0 {
+				t.Fatal("rejected heartbeat renewed corrupt agent")
+			}
+			if err := backend.client.ZScore(ctx, backend.agentsKey(), "agent-corrupt").Err(); !errors.Is(err, redisclient.Nil) {
+				t.Fatalf("rejected heartbeat left global index: %v", err)
+			}
+			if err := backend.client.ZScore(ctx, backend.relayAgentsKey("relay-target"), "agent-corrupt").Err(); !errors.Is(err, redisclient.Nil) {
+				t.Fatalf("rejected heartbeat left relay index: %v", err)
+			}
+		})
+	}
+}
+
+func TestHeartbeatAgentConcurrentRegistrationPreservesFreshRecord(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	registerRelay(t, backend, "relay-1")
+	for i := 0; i < 64; i++ {
+		agentID := fmt.Sprintf("agent-heartbeat-refresh-%d", i)
+		registerAgent(t, backend, agentID, "relay-1")
+		if err := backend.client.HDel(ctx, backend.agentKey(agentID), "placement_updated_ms").Err(); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() {
+			<-start
+			errs <- backend.RegisterAgent(ctx, registry.Agent{ID: agentID}, "relay-1")
+		}()
+		go func() {
+			<-start
+			err := backend.HeartbeatAgent(ctx, agentID, "relay-1")
+			if errors.Is(err, registry.ErrNotFound) {
+				err = nil
+			}
+			errs <- err
+		}()
+		close(start)
+		for range 2 {
+			if err := <-errs; err != nil {
+				t.Fatalf("concurrent agent register/heartbeat: %v", err)
+			}
+		}
+		assertPlacement(t, backend, agentID, "relay-1")
 	}
 }
 
@@ -557,8 +804,8 @@ func TestRelayReregistrationFencesPreviousAgentIncarnation(t *testing.T) {
 		if err := backend.HeartbeatAgent(context.Background(), "agent-old", "relay-reused"); !errors.Is(err, registry.ErrNotFound) {
 			t.Fatalf("HeartbeatAgent(old incarnation) error = %v, want ErrNotFound", err)
 		}
-		if exists := backend.client.Exists(context.Background(), backend.agentKey("agent-old")).Val(); exists != 1 {
-			t.Fatal("rejected heartbeat deleted the existing agent instead of leaving ownership unchanged")
+		if exists := backend.client.Exists(context.Background(), backend.agentKey("agent-old")).Val(); exists != 0 {
+			t.Fatal("rejected heartbeat did not repair the old-incarnation agent")
 		}
 	})
 
@@ -874,6 +1121,79 @@ func TestConcurrentStaleRelayListsPreserveReassignment(t *testing.T) {
 			}
 		}
 		assertPlacement(t, backend, agentID, "relay-b")
+	}
+}
+
+func TestRelayListFinalFenceRejectsMutationAfterAgentReads(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	registerRelay(t, backend, "relay-1")
+	registerAgent(t, backend, "agent-1", "relay-1")
+
+	for _, tt := range []struct {
+		name    string
+		corrupt func() error
+	}{
+		{name: "hash field", corrupt: func() error { return backend.client.HDel(ctx, backend.relayKey("relay-1"), "address").Err() }},
+		{name: "global index", corrupt: func() error { return backend.client.ZRem(ctx, backend.relaysKey(), "relay-1").Err() }},
+		{name: "incarnation", corrupt: func() error {
+			return backend.client.HSet(ctx, backend.relayKey("relay-1"), "incarnation", "9999").Err()
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			registerRelay(t, backend, "relay-1")
+			registerAgent(t, backend, "agent-1", "relay-1")
+			currentIncarnation := relayIncarnation(t, backend, "relay-1")
+			if err := tt.corrupt(); err != nil {
+				t.Fatal(err)
+			}
+			valid, err := validateRelayIncarnationScript.Run(ctx, backend.client,
+				[]string{backend.relayKey("relay-1"), backend.relaysKey(), backend.relayAgentsKey("relay-1")},
+				"relay-1", currentIncarnation,
+			).Int64()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if valid != 0 {
+				t.Fatal("final fence accepted relay mutated after agent reads")
+			}
+		})
+	}
+}
+
+func TestRelayListFinalFenceConcurrentRefreshPreservesFreshRecord(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	for i := 0; i < 64; i++ {
+		relayID := fmt.Sprintf("relay-final-refresh-%d", i)
+		registerRelay(t, backend, relayID)
+		incarnation := relayIncarnation(t, backend, relayID)
+		if err := backend.client.HDel(ctx, backend.relayKey(relayID), "address").Err(); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() {
+			<-start
+			errs <- backend.RegisterRelay(ctx, registry.Relay{ID: relayID, Address: "127.0.0.1", GRPCPort: 50051})
+		}()
+		go func() {
+			<-start
+			_, err := validateRelayIncarnationScript.Run(ctx, backend.client,
+				[]string{backend.relayKey(relayID), backend.relaysKey(), backend.relayAgentsKey(relayID)},
+				relayID, incarnation,
+			).Result()
+			errs <- err
+		}()
+		close(start)
+		for range 2 {
+			if err := <-errs; err != nil {
+				t.Fatalf("concurrent final fence/refresh: %v", err)
+			}
+		}
+		if err := backend.HeartbeatRelay(ctx, relayID); err != nil {
+			t.Fatalf("final fence deleted fresh relay %q: %v", relayID, err)
+		}
 	}
 }
 

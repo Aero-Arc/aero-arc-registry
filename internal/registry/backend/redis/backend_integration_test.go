@@ -42,13 +42,18 @@ func TestRedisIntegration(t *testing.T) {
 			backend.relayKey("relay-takeover"),
 			backend.relayKey("relay-corrupt"),
 			backend.relayKey("relay-register-corrupt"),
+			backend.relayKey("relay-heartbeat-corrupt"),
+			backend.relayKey("relay-agent-heartbeat"),
 			backend.agentKey("agent-integration"),
 			backend.agentKey("agent-corrupt"),
 			backend.agentKey("agent-register-rejected"),
+			backend.agentKey("agent-heartbeat-corrupt"),
 			backend.relayAgentsKey("relay-integration"),
 			backend.relayAgentsKey("relay-takeover"),
 			backend.relayAgentsKey("relay-corrupt"),
 			backend.relayAgentsKey("relay-register-corrupt"),
+			backend.relayAgentsKey("relay-heartbeat-corrupt"),
+			backend.relayAgentsKey("relay-agent-heartbeat"),
 			backend.relayIncarnationKey(),
 			backend.relaysKey(),
 			backend.agentsKey(),
@@ -140,6 +145,34 @@ func TestRedisIntegration(t *testing.T) {
 	}
 	if err := backend.RemoveRelay(ctx, "relay-register-corrupt"); err != nil {
 		t.Fatalf("RemoveRelay(registration scenario) error = %v", err)
+	}
+
+	registerRelay(t, backend, "relay-heartbeat-corrupt")
+	if err := client.HDel(ctx, backend.relayKey("relay-heartbeat-corrupt"), "address").Err(); err != nil {
+		t.Fatalf("corrupt relay heartbeat target: %v", err)
+	}
+	if err := backend.HeartbeatRelay(ctx, "relay-heartbeat-corrupt"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("HeartbeatRelay(corrupt target) error = %v, want ErrNotFound", err)
+	}
+	if exists := client.Exists(ctx, backend.relayKey("relay-heartbeat-corrupt"), backend.relayAgentsKey("relay-heartbeat-corrupt")).Val(); exists != 0 {
+		t.Fatalf("rejected relay heartbeat left %d keys", exists)
+	}
+
+	registerRelay(t, backend, "relay-agent-heartbeat")
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-heartbeat-corrupt"}, "relay-agent-heartbeat"); err != nil {
+		t.Fatalf("RegisterAgent(heartbeat scenario) error = %v", err)
+	}
+	if err := client.HSet(ctx, backend.agentKey("agent-heartbeat-corrupt"), "placement_updated_ms", "invalid").Err(); err != nil {
+		t.Fatalf("corrupt agent heartbeat target: %v", err)
+	}
+	if err := backend.HeartbeatAgent(ctx, "agent-heartbeat-corrupt", "relay-agent-heartbeat"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("HeartbeatAgent(corrupt target) error = %v, want ErrNotFound", err)
+	}
+	if exists := client.Exists(ctx, backend.agentKey("agent-heartbeat-corrupt")).Val(); exists != 0 {
+		t.Fatal("rejected agent heartbeat renewed corrupt entity")
+	}
+	if err := backend.RemoveRelay(ctx, "relay-agent-heartbeat"); err != nil {
+		t.Fatalf("RemoveRelay(agent heartbeat scenario) error = %v", err)
 	}
 
 	if err := backend.HeartbeatRelay(ctx, "relay-integration"); err != nil {

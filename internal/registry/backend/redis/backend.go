@@ -209,6 +209,7 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID s
 			b.agentsKey(),
 			b.relayKey(expectedRelayID),
 			b.relayAgentsKey(expectedRelayID),
+			b.relaysKey(),
 		},
 		agentID, expectedRelayID, b.ttl.Agent.Milliseconds(),
 	).Int64()
@@ -340,12 +341,16 @@ func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*regis
 		agents = append(agents, &registry.Agent{ID: values[0], LastHeartbeat: lastHeartbeat})
 	}
 
-	// Do not report a placement snapshot for a relay that expired or was
-	// re-registered during the read.
-	currentIncarnation, err := b.client.HGet(ctx, b.relayKey(relayID), "incarnation").Result()
-	if err != nil && !errors.Is(err, redisclient.Nil) {
+	// Do not report a placement snapshot for a relay that expired, became
+	// corrupt, lost its live index entry, or was re-registered during the read.
+	valid, err := validateRelayIncarnationScript.Run(ctx, b.client,
+		[]string{b.relayKey(relayID), b.relaysKey(), b.relayAgentsKey(relayID)},
+		relayID, relayIncarnation,
+	).Int64()
+	if err != nil {
 		return nil, fmt.Errorf("recheck relay %q: %w", relayID, err)
-	} else if errors.Is(err, redisclient.Nil) || currentIncarnation != relayIncarnation {
+	}
+	if valid == 0 {
 		return nil, errRelayNotRegistered
 	}
 
@@ -457,10 +462,12 @@ local function valid_relay(values, expected_id, relays_index, current_time_ms)
 end
 `
 
-var registerRelayScript = redisclient.NewScript(redisNowMilliseconds + `
+var registerRelayScript = redisclient.NewScript(redisNowMilliseconds + redisEntityValidationLua + `
 local expires_ms = tonumber(now_ms) + tonumber(ARGV[4])
-local incarnation = redis.call('HGET', KEYS[1], 'incarnation')
-if not incarnation then
+local current = redis.call('HMGET', KEYS[1], 'id', 'incarnation')
+local incarnation = current[2]
+if current[1] ~= ARGV[1] or
+   not valid_nonnegative_int64(incarnation) or tonumber(incarnation) < 1 then
   incarnation = tostring(redis.call('INCR', KEYS[4]))
   redis.call('DEL', KEYS[3])
 end
@@ -476,8 +483,13 @@ if redis.call('EXISTS', KEYS[3]) == 1 then redis.call('PEXPIRE', KEYS[3], ARGV[4
 return incarnation
 `)
 
-var heartbeatRelayScript = redisclient.NewScript(redisNowMilliseconds + `
-if not redis.call('HGET', KEYS[1], 'incarnation') then
+var heartbeatRelayScript = redisclient.NewScript(redisNowMilliseconds + redisEntityValidationLua + `
+local relay = redis.call('HMGET', KEYS[1],
+  'id', 'address', 'grpc_port', 'incarnation', 'last_seen_ms')
+if not valid_relay(relay, ARGV[1], KEYS[2], now_ms) then
+  redis.call('DEL', KEYS[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  redis.call('DEL', KEYS[3])
   return 0
 end
 local expires_ms = tonumber(now_ms) + tonumber(ARGV[2])
@@ -488,7 +500,7 @@ if redis.call('EXISTS', KEYS[3]) == 1 then redis.call('PEXPIRE', KEYS[3], ARGV[2
 return 1
 `)
 
-var readLiveRelayScript = redisclient.NewScript(`
+var readLiveRelayScript = redisclient.NewScript(redisNowMilliseconds + redisEntityValidationLua + `
 local function remove_relay()
   redis.call('DEL', KEYS[1])
   redis.call('ZREM', KEYS[2], ARGV[1])
@@ -501,26 +513,24 @@ if redis.call('EXISTS', KEYS[1]) == 0 then
 end
 local values = redis.call('HMGET', KEYS[1],
   'id', 'address', 'grpc_port', 'incarnation', 'last_seen_ms')
-local port = values[3] and tonumber(values[3])
-local function valid_nonnegative_int64(value)
-  if not value or not string.match(value, '^%d+$') then return false end
-  if string.len(value) > 19 or
-     (string.len(value) == 19 and value > '9223372036854775807') then
-    return false
-  end
-  return true
-end
-local valid_incarnation = valid_nonnegative_int64(values[4]) and tonumber(values[4]) > 0
-local valid_timestamp = valid_nonnegative_int64(values[5])
-if not values[1] or values[1] ~= ARGV[1] or
-   not values[2] or values[2] == '' or
-   not values[3] or not string.match(values[3], '^%d+$') or
-   not port or port < 1 or port > 65535 or
-   not valid_incarnation or not valid_timestamp then
+if not valid_relay(values, ARGV[1], KEYS[2], now_ms) then
   remove_relay()
   return nil
 end
 return values
+`)
+
+var validateRelayIncarnationScript = redisclient.NewScript(redisNowMilliseconds + redisEntityValidationLua + `
+local relay = redis.call('HMGET', KEYS[1],
+  'id', 'address', 'grpc_port', 'incarnation', 'last_seen_ms')
+if not valid_relay(relay, ARGV[1], KEYS[2], now_ms) then
+  redis.call('DEL', KEYS[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  redis.call('DEL', KEYS[3])
+  return 0
+end
+if relay[4] ~= ARGV[2] then return 0 end
+return 1
 `)
 
 var removeRelayScript = redisclient.NewScript(`
@@ -559,29 +569,6 @@ redis.call('HSET', KEYS[1],
   'relay_agents_key', KEYS[4],
   'placement_updated_ms', now_ms)
 redis.call('PEXPIRE', KEYS[1], ARGV[3])
-redis.call('ZADD', KEYS[2], expires_ms, ARGV[1])
-redis.call('ZADD', KEYS[4], expires_ms, ARGV[1])
-redis.call('PEXPIRE', KEYS[4], redis.call('PTTL', KEYS[3]))
-return 1
-`)
-
-var heartbeatAgentScript = redisclient.NewScript(redisNowMilliseconds + `
-if redis.call('EXISTS', KEYS[1]) == 0 then
-	return 0
-end
-local relay_id = redis.call('HGET', KEYS[1], 'relay_id')
-local relay_key = redis.call('HGET', KEYS[1], 'relay_key')
-local relay_agents_key = redis.call('HGET', KEYS[1], 'relay_agents_key')
-local relay_incarnation = redis.call('HGET', KEYS[1], 'relay_incarnation')
-if relay_id ~= ARGV[2] or relay_key ~= KEYS[3] or relay_agents_key ~= KEYS[4] or
-   not relay_incarnation or redis.call('HGET', KEYS[3], 'incarnation') ~= relay_incarnation then
-	return 0
-end
-redis.call('HSET', KEYS[1],
-  'last_heartbeat_ms', now_ms,
-  'placement_updated_ms', now_ms)
-redis.call('PEXPIRE', KEYS[1], ARGV[3])
-local expires_ms = tonumber(now_ms) + tonumber(ARGV[3])
 redis.call('ZADD', KEYS[2], expires_ms, ARGV[1])
 redis.call('ZADD', KEYS[4], expires_ms, ARGV[1])
 redis.call('PEXPIRE', KEYS[4], redis.call('PTTL', KEYS[3]))
@@ -651,6 +638,28 @@ local function live_agent(agent_key, agents_index, relays_index, expected_id)
   return values
 end
 `
+
+var heartbeatAgentScript = redisclient.NewScript(redisNowMilliseconds + agentReadValidationLua + `
+local values = live_agent(KEYS[1], KEYS[2], KEYS[5], ARGV[1])
+if not values then
+  redis.call('ZREM', KEYS[4], ARGV[1])
+  return 0
+end
+if values[3] ~= ARGV[2] or values[4] ~= KEYS[3] or
+   values[6] ~= KEYS[4] then
+  if values[6] ~= KEYS[4] then redis.call('ZREM', KEYS[4], ARGV[1]) end
+  return 0
+end
+redis.call('HSET', KEYS[1],
+  'last_heartbeat_ms', now_ms,
+  'placement_updated_ms', now_ms)
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+local expires_ms = tonumber(now_ms) + tonumber(ARGV[3])
+redis.call('ZADD', KEYS[2], expires_ms, ARGV[1])
+redis.call('ZADD', KEYS[4], expires_ms, ARGV[1])
+redis.call('PEXPIRE', KEYS[4], redis.call('PTTL', KEYS[3]))
+return 1
+`)
 
 var liveAgentScript = redisclient.NewScript(agentReadValidationLua + `
 local values = live_agent(KEYS[1], KEYS[2], KEYS[3], ARGV[1])
