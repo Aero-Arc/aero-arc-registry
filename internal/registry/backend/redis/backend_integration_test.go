@@ -48,16 +48,19 @@ func TestRedisIntegration(t *testing.T) {
 			backend.relayKey("relay-register-corrupt"),
 			backend.relayKey("relay-heartbeat-corrupt"),
 			backend.relayKey("relay-agent-heartbeat"),
+			backend.relayKey("relay-ttl-expiry"),
 			backend.agentKey("agent-integration"),
 			backend.agentKey("agent-corrupt"),
 			backend.agentKey("agent-register-rejected"),
 			backend.agentKey("agent-heartbeat-corrupt"),
+			backend.agentKey("agent-ttl-expiry"),
 			backend.relayAgentsKey("relay-integration"),
 			backend.relayAgentsKey("relay-takeover"),
 			backend.relayAgentsKey("relay-corrupt"),
 			backend.relayAgentsKey("relay-register-corrupt"),
 			backend.relayAgentsKey("relay-heartbeat-corrupt"),
 			backend.relayAgentsKey("relay-agent-heartbeat"),
+			backend.relayAgentsKey("relay-ttl-expiry"),
 			backend.relayIncarnationKey(),
 			backend.relaysKey(),
 			backend.agentsKey(),
@@ -203,6 +206,39 @@ func TestRedisIntegration(t *testing.T) {
 		t.Fatalf("agent PTTL = %v, error = %v", ttl, err)
 	}
 
+	registerRelay(t, backend, "relay-ttl-expiry")
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-ttl-expiry"}, "relay-ttl-expiry"); err != nil {
+		t.Fatalf("RegisterAgent(TTL scenario) error = %v", err)
+	}
+	if err := client.PExpire(ctx, backend.relayKey("relay-ttl-expiry"), 50*time.Millisecond).Err(); err != nil {
+		t.Fatalf("shorten relay TTL: %v", err)
+	}
+	expiryDeadline := time.Now().Add(2 * time.Second)
+	for client.Exists(ctx, backend.relayKey("relay-ttl-expiry")).Val() != 0 && time.Now().Before(expiryDeadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if exists := client.Exists(ctx, backend.relayKey("relay-ttl-expiry")).Val(); exists != 0 {
+		t.Fatal("Redis did not expire the short-lived relay hash")
+	}
+	if _, err := backend.GetAgentPlacement(ctx, "agent-ttl-expiry"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetAgentPlacement(expired relay) error = %v, want ErrNotFound", err)
+	}
+	if exists := client.Exists(ctx, backend.agentKey("agent-ttl-expiry")).Val(); exists != 0 {
+		t.Fatal("placement read did not repair agent whose relay expired")
+	}
+	if relays, err := backend.ListRelays(ctx); err != nil {
+		t.Fatalf("ListRelays(TTL scenario) error = %v", err)
+	} else {
+		for _, relay := range relays {
+			if relay.ID == "relay-ttl-expiry" {
+				t.Fatalf("ListRelays returned expired relay: %+v", relay)
+			}
+		}
+	}
+	if err := client.ZScore(ctx, backend.relaysKey(), "relay-ttl-expiry").Err(); !errors.Is(err, redisclient.Nil) {
+		t.Fatalf("expired relay index was not repaired: %v", err)
+	}
+
 	registerRelay(t, backend, "relay-corrupt")
 	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-corrupt"}, "relay-corrupt"); err != nil {
 		t.Fatalf("RegisterAgent(corrupt relay) error = %v", err)
@@ -242,8 +278,17 @@ func TestRedisIntegration(t *testing.T) {
 	if err := backend.RemoveAgents(ctx, []string{"agent-integration", "agent-corrupt"}); err != nil {
 		t.Fatalf("RemoveAgents() error = %v", err)
 	}
+	if _, err := backend.GetAgentPlacement(ctx, "agent-integration"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetAgentPlacement(removed agent) error = %v, want ErrNotFound", err)
+	}
+	if agents, err := backend.ListRelayAgents(ctx, "relay-integration"); err != nil || len(agents) != 0 {
+		t.Fatalf("ListRelayAgents() after RemoveAgents = %+v, error=%v", agents, err)
+	}
 	if err := backend.RemoveRelay(ctx, "relay-integration"); err != nil {
 		t.Fatalf("RemoveRelay() error = %v", err)
+	}
+	if err := backend.HeartbeatRelay(ctx, "relay-integration"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("HeartbeatRelay(removed relay) error = %v, want ErrNotFound", err)
 	}
 	if err := backend.RemoveRelay(ctx, "relay-takeover"); err != nil {
 		t.Fatalf("RemoveRelay(takeover) error = %v", err)
