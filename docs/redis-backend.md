@@ -21,6 +21,42 @@ Redis is the production registry backend. It stores only current control-plane s
 
 The service-level TTL sweep is disabled for Redis. Redis `TIME` and native key expiry are the sole liveness authority, avoiding incorrect deletions when a registry replica's clock differs from the Redis server. Backends without native TTL support, including the in-memory backend, continue to use the service-level sweep.
 
+## Why Lua
+
+A single Registry operation can span an entity hash, the global expiry index,
+the per-relay membership index, native TTLs, and the relay incarnation
+sequence. Together those records express one placement and liveness invariant.
+Issuing separate Redis commands from Go would allow expiry, heartbeat,
+reassignment, or relay re-creation to interleave midway through an operation.
+That could expose partial state or let a stale relay renew an agent it no longer
+owns.
+
+Redis executes a Lua program atomically on the server. Each Registry script can
+therefore validate the current entity, TTL, index membership, relay incarnation,
+and expected owner, then update or repair all related keys as one indivisible
+operation. The scripts also use Redis `TIME`, which gives every Registry replica
+the same timestamp authority, and they avoid the network round trips required by
+an equivalent sequence of client-side commands.
+
+`MULTI`/`EXEC` alone cannot branch on values read during the transaction.
+`WATCH` could provide optimistic concurrency, but it would require client-side
+retry loops and duplicate the conditional validation and repair state machine in
+Go. Embedded Lua keeps each atomic state transition with the Redis adapter and
+ships it inside the Registry binary, so there is no separate server-side script
+deployment.
+
+To keep atomic execution safe and reviewable:
+
+- Lua is limited to Redis storage invariants; API validation and service policy
+  remain in Go.
+- Scripts operate on a bounded set of keys and do not perform unbounded scans or
+  external I/O, because Redis serializes script execution.
+- Related keys share the `{aero-arc-registry}` hash tag so every script remains
+  within one Redis Cluster hash slot, even though Redis Cluster is not currently
+  supported.
+- Every script documents its ordered `KEYS` and `ARGV` contract. Its Go wrapper,
+  Lua source, and transaction tests must change together.
+
 ## Key model
 
 All keys use the versioned `{aero-arc-registry}:v1:` namespace. Entity IDs are URL-safe base64 encoded in key names.
