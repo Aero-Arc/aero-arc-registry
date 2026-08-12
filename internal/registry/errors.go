@@ -9,7 +9,7 @@ var (
 	ErrRedisConfigNil     = errors.New("redis config is nil")
 	ErrRedisAddrEmpty     = errors.New("redis address is empty")
 	ErrRedisPortInvalid   = errors.New("redis port must be > 0")
-	ErrRedisDBInvalid     = errors.New("redis db must be > 0")
+	ErrRedisDBInvalid     = errors.New("redis db must be >= 0")
 	ErrGRPCPortInvalid    = errors.New("grpc port must be > 0")
 	ErrTLSCertPathMissing = errors.New("grpc tls cert path empty")
 	ErrTLSKeyPathMissing  = errors.New("grpc tls key path empty")
