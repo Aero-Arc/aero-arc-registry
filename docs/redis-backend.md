@@ -6,6 +6,7 @@ Redis is the production registry backend. It stores only current control-plane s
 
 - Relay and agent hashes use Redis-native millisecond TTLs. Registration and heartbeats renew the relevant TTL.
 - Mutating scripts use Redis `TIME`, so timestamps do not depend on the clock of a particular registry replica.
+- A relay registration creates a monotonically increasing Redis-issued incarnation when no live hash exists. Idempotent retries and metadata updates preserve the active incarnation and agent membership. Re-creation after expiry or removal receives a new incarnation; agent registrations capture it, and reads and heartbeats reject surviving hashes from the prior relay instance.
 - An agent is live only while both its agent hash and assigned relay hash exist. A relay expiry therefore removes its agents from registry reads immediately, even before the periodic registry sweep runs.
 - Agent registration, reassignment, heartbeat, and removal update the entity, placement, and indexes atomically with Lua scripts.
 - Sorted-set indexes carry the same expiry deadline as their entities. Reads prune expired members and ignore hashes that expired between the index and entity reads.
@@ -19,17 +20,18 @@ All keys use the versioned `{aero-arc-registry}:v1:` namespace. Entity IDs are U
 
 | Key | Type | Purpose |
 | --- | --- | --- |
-| `...:relay:<id>` | hash with TTL | Relay address, gRPC port, and last heartbeat |
-| `...:agent:<id>` | hash with TTL | Agent heartbeat and current relay placement |
+| `...:relay:<id>` | hash with TTL | Relay address, gRPC port, incarnation, and last heartbeat |
+| `...:agent:<id>` | hash with TTL | Agent heartbeat, current relay placement, and relay incarnation |
 | `...:relays` | sorted set | Relay IDs scored by expiry time |
 | `...:agents` | sorted set | Agent IDs scored by expiry time |
 | `...:relay-agents:<id>` | sorted set | Agent IDs placed on one relay, scored by agent expiry |
+| `...:relay-incarnation-sequence` | integer | Monotonic source for relay incarnation tokens |
 
 The namespace contains a Redis hash tag so related keys share a slot. The current client targets a standalone Redis deployment; Redis Cluster is not yet a supported configuration.
 
 ## Failure behavior
 
-Redis and context errors are returned to the gRPC layer. Missing or expired entities map to `registry.ErrNotFound`. Corrupt records fail the list/read operation instead of returning partially decoded state. Secondary-index cleanup is best effort because stale members are already excluded from responses.
+Redis and context errors are returned to the gRPC layer. Missing or expired entities map to `registry.ErrNotFound`. Agent lists atomically omit and repair incomplete, invalid, or old-incarnation records instead of failing the entire list. Corrupt relay records fail their list/read operation rather than returning partially decoded endpoints. Secondary-index cleanup for already-expired hashes is best effort because stale members are excluded from responses.
 
 ## Tests
 

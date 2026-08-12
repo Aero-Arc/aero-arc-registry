@@ -4,6 +4,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -40,6 +41,7 @@ func TestRedisIntegration(t *testing.T) {
 			backend.relayKey("relay-integration"),
 			backend.agentKey("agent-integration"),
 			backend.relayAgentsKey("relay-integration"),
+			backend.relayIncarnationKey(),
 			backend.relaysKey(),
 			backend.agentsKey(),
 		).Err()
@@ -60,6 +62,24 @@ func TestRedisIntegration(t *testing.T) {
 	}
 	assertPlacement(t, backend, "agent-integration", "relay-integration")
 	assertRelayAgentIDs(t, backend, "relay-integration", []string{"agent-integration"})
+	incarnation := relayIncarnation(t, backend, "relay-integration")
+
+	if err := backend.RemoveRelay(ctx, "relay-integration"); err != nil {
+		t.Fatalf("RemoveRelay(before re-registration) error = %v", err)
+	}
+	registerRelay(t, backend, "relay-integration")
+	if current := relayIncarnation(t, backend, "relay-integration"); current == incarnation {
+		t.Fatalf("relay re-registration reused incarnation %q", current)
+	}
+	if agents, err := backend.ListAgents(ctx); err != nil || len(agents) != 0 {
+		t.Fatalf("ListAgents() after relay re-registration = %+v, error = %v", agents, err)
+	}
+	if _, err := backend.GetAgentPlacement(ctx, "agent-integration"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetAgentPlacement(old incarnation) error = %v, want ErrNotFound", err)
+	}
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-integration"}, "relay-integration"); err != nil {
+		t.Fatalf("RegisterAgent(current incarnation) error = %v", err)
+	}
 
 	if err := backend.HeartbeatRelay(ctx, "relay-integration"); err != nil {
 		t.Fatalf("HeartbeatRelay() error = %v", err)

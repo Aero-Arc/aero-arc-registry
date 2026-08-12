@@ -92,6 +92,8 @@ func TestRelayLifecycle(t *testing.T) {
 	if ttl := server.TTL(backend.relayKey("relay-1")); ttl != 5*time.Second {
 		t.Fatalf("relay TTL after heartbeat = %v, want 5s", ttl)
 	}
+	incarnation := relayIncarnation(t, backend, "relay-1")
+	registerAgent(t, backend, "agent-preserved", "relay-1")
 
 	if err := backend.RegisterRelay(ctx, registry.Relay{
 		ID: "relay-1", Address: "10.0.0.2", GRPCPort: 50052,
@@ -105,6 +107,10 @@ func TestRelayLifecycle(t *testing.T) {
 	if got := relays[0]; got.Address != "10.0.0.2" || got.GRPCPort != 50052 {
 		t.Fatalf("updated relay = %+v", got)
 	}
+	if current := relayIncarnation(t, backend, "relay-1"); current != incarnation {
+		t.Fatalf("idempotent relay update changed incarnation: got %q want %q", current, incarnation)
+	}
+	assertRelayAgentIDs(t, backend, "relay-1", []string{"agent-preserved"})
 
 	if err := backend.RemoveRelay(ctx, "relay-1"); err != nil {
 		t.Fatalf("RemoveRelay() error = %v", err)
@@ -181,6 +187,127 @@ func TestAgentLifecycleAndAtomicReassignment(t *testing.T) {
 		t.Fatalf("GetAgentPlacement(removed) error = %v, want ErrNotFound", err)
 	}
 	assertRelayAgentIDs(t, backend, "relay-2", nil)
+}
+
+func TestRelayReregistrationFencesPreviousAgentIncarnation(t *testing.T) {
+	t.Run("expiry", func(t *testing.T) {
+		backend, server := newTestBackend(t, time.Second, 10*time.Second)
+		registerRelay(t, backend, "relay-reused")
+		registerAgent(t, backend, "agent-old", "relay-reused")
+		oldIncarnation := relayIncarnation(t, backend, "relay-reused")
+
+		server.FastForward(1100 * time.Millisecond)
+		if exists := backend.client.Exists(context.Background(), backend.agentKey("agent-old")).Val(); exists != 1 {
+			t.Fatal("agent did not survive long enough to exercise relay recreation")
+		}
+		registerRelay(t, backend, "relay-reused")
+		if current := relayIncarnation(t, backend, "relay-reused"); current == oldIncarnation {
+			t.Fatalf("relay recreation after expiry reused incarnation %q", current)
+		}
+		agents, err := backend.ListAgents(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(agents) != 0 {
+			t.Fatalf("ListAgents() = %+v, want old incarnation fenced", agents)
+		}
+	})
+
+	t.Run("placement", func(t *testing.T) {
+		backend, _ := newTestBackend(t, time.Minute, time.Minute)
+		registerRelay(t, backend, "relay-reused")
+		registerAgent(t, backend, "agent-old", "relay-reused")
+		oldIncarnation := relayIncarnation(t, backend, "relay-reused")
+
+		if err := backend.RemoveRelay(context.Background(), "relay-reused"); err != nil {
+			t.Fatal(err)
+		}
+		registerRelay(t, backend, "relay-reused")
+		if current := relayIncarnation(t, backend, "relay-reused"); current == oldIncarnation {
+			t.Fatalf("relay incarnation was reused: %q", current)
+		}
+		if _, err := backend.GetAgentPlacement(context.Background(), "agent-old"); !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("GetAgentPlacement(old incarnation) error = %v, want ErrNotFound", err)
+		}
+		if exists := backend.client.Exists(context.Background(), backend.agentKey("agent-old")).Val(); exists != 0 {
+			t.Fatal("placement lookup did not repair old-incarnation agent hash")
+		}
+	})
+
+	t.Run("heartbeat", func(t *testing.T) {
+		backend, _ := newTestBackend(t, time.Minute, time.Minute)
+		registerRelay(t, backend, "relay-reused")
+		registerAgent(t, backend, "agent-old", "relay-reused")
+		if err := backend.RemoveRelay(context.Background(), "relay-reused"); err != nil {
+			t.Fatal(err)
+		}
+		registerRelay(t, backend, "relay-reused")
+
+		if err := backend.HeartbeatAgent(context.Background(), "agent-old"); !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("HeartbeatAgent(old incarnation) error = %v, want ErrNotFound", err)
+		}
+		if exists := backend.client.Exists(context.Background(), backend.agentKey("agent-old")).Val(); exists != 0 {
+			t.Fatal("heartbeat did not repair old-incarnation agent hash")
+		}
+	})
+
+	t.Run("lists", func(t *testing.T) {
+		backend, _ := newTestBackend(t, time.Minute, time.Minute)
+		registerRelay(t, backend, "relay-reused")
+		registerAgent(t, backend, "agent-old", "relay-reused")
+		if err := backend.RemoveRelay(context.Background(), "relay-reused"); err != nil {
+			t.Fatal(err)
+		}
+		registerRelay(t, backend, "relay-reused")
+		registerAgent(t, backend, "agent-current", "relay-reused")
+
+		agents, err := backend.ListAgents(context.Background())
+		if err != nil {
+			t.Fatalf("ListAgents() error = %v", err)
+		}
+		if len(agents) != 1 || agents[0].ID != "agent-current" {
+			t.Fatalf("ListAgents() = %+v, want only current incarnation", agents)
+		}
+		assertRelayAgentIDs(t, backend, "relay-reused", []string{"agent-current"})
+	})
+}
+
+func TestListAgentsOmitsAndRepairsCorruptRecords(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	registerRelay(t, backend, "relay-1")
+	for _, agentID := range []string{"agent-valid", "agent-missing-field", "agent-invalid-time", "agent-wrong-id"} {
+		registerAgent(t, backend, agentID, "relay-1")
+	}
+
+	if err := backend.client.HDel(ctx, backend.agentKey("agent-missing-field"), "last_heartbeat_ms").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.client.HSet(ctx, backend.agentKey("agent-invalid-time"), "last_heartbeat_ms", "not-a-time").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.client.HSet(ctx, backend.agentKey("agent-wrong-id"), "id", "another-agent").Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	agents, err := backend.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 || agents[0].ID != "agent-valid" {
+		t.Fatalf("ListAgents() = %+v, want only valid record", agents)
+	}
+	for _, agentID := range []string{"agent-missing-field", "agent-invalid-time", "agent-wrong-id"} {
+		if exists := backend.client.Exists(ctx, backend.agentKey(agentID)).Val(); exists != 0 {
+			t.Fatalf("corrupt agent hash %q was not removed", agentID)
+		}
+		if err := backend.client.ZScore(ctx, backend.agentsKey(), agentID).Err(); !errors.Is(err, redisclient.Nil) {
+			t.Fatalf("global index still contains %q: %v", agentID, err)
+		}
+		if err := backend.client.ZScore(ctx, backend.relayAgentsKey("relay-1"), agentID).Err(); !errors.Is(err, redisclient.Nil) {
+			t.Fatalf("relay index still contains %q: %v", agentID, err)
+		}
+	}
 }
 
 func TestNativeTTLExcludesExpiredEntitiesAndRepairsIndexes(t *testing.T) {
@@ -315,6 +442,22 @@ func registerRelay(t *testing.T, backend *Backend, relayID string) {
 	}); err != nil {
 		t.Fatalf("RegisterRelay(%q) error = %v", relayID, err)
 	}
+}
+
+func registerAgent(t *testing.T, backend *Backend, agentID, relayID string) {
+	t.Helper()
+	if err := backend.RegisterAgent(context.Background(), registry.Agent{ID: agentID}, relayID); err != nil {
+		t.Fatalf("RegisterAgent(%q, %q) error = %v", agentID, relayID, err)
+	}
+}
+
+func relayIncarnation(t *testing.T, backend *Backend, relayID string) string {
+	t.Helper()
+	incarnation, err := backend.client.HGet(context.Background(), backend.relayKey(relayID), "incarnation").Result()
+	if err != nil {
+		t.Fatalf("read relay incarnation: %v", err)
+	}
+	return incarnation
 }
 
 func assertPlacement(t *testing.T, backend *Backend, agentID, relayID string) {

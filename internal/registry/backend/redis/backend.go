@@ -90,7 +90,7 @@ func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error
 	}
 
 	_, err := registerRelayScript.Run(ctx, b.client,
-		[]string{b.relayKey(relay.ID), b.relaysKey(), b.relayAgentsKey(relay.ID)},
+		[]string{b.relayKey(relay.ID), b.relaysKey(), b.relayAgentsKey(relay.ID), b.relayIncarnationKey()},
 		relay.ID, relay.Address, relay.GRPCPort, b.ttl.Relay.Milliseconds(),
 	).Result()
 	if err != nil {
@@ -239,74 +239,44 @@ func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 	}
 
 	pipe := b.client.Pipeline()
-	commands := make([]*redisclient.SliceCmd, len(ids))
+	commands := make([]*redisclient.Cmd, len(ids))
 	for i, id := range ids {
-		commands[i] = pipe.HMGet(ctx, b.agentKey(id), "id", "last_heartbeat_ms", "relay_key")
+		commands[i] = readLiveAgentScript.Eval(ctx, pipe,
+			[]string{b.agentKey(id), b.agentsKey()}, id,
+		)
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redisclient.Nil) {
 		return nil, fmt.Errorf("read agents: %w", err)
 	}
 
-	type agentCandidate struct {
-		id       string
-		lastSeen string
-		relayKey string
-	}
-	candidates := make([]agentCandidate, 0, len(ids))
-	staleIDs := make([]interface{}, 0)
+	agents := make([]registry.Agent, 0, len(ids))
 	for i := range commands {
-		values, err := commands[i].Result()
+		values, err := commands[i].StringSlice()
+		if errors.Is(err, redisclient.Nil) || (err == nil && len(values) == 0) {
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read agent %q: %w", ids[i], err)
 		}
-		id, okID := redisString(values, 0)
-		lastSeen, okLastSeen := redisString(values, 1)
-		relayKey, okRelayKey := redisString(values, 2)
-		if !okID && !okLastSeen && !okRelayKey {
-			staleIDs = append(staleIDs, ids[i])
-			continue
+		if len(values) != 2 {
+			return nil, fmt.Errorf("read agent %q: corrupt redis response", ids[i])
 		}
-		if !okID || !okLastSeen || !okRelayKey {
-			return nil, fmt.Errorf("decode agent %q: incomplete redis record", ids[i])
-		}
-		candidates = append(candidates, agentCandidate{id: id, lastSeen: lastSeen, relayKey: relayKey})
-	}
-
-	relayPipe := b.client.Pipeline()
-	relayCommands := make([]*redisclient.IntCmd, len(candidates))
-	for i, candidate := range candidates {
-		relayCommands[i] = relayPipe.Exists(ctx, candidate.relayKey)
-	}
-	if _, err := relayPipe.Exec(ctx); err != nil && !errors.Is(err, redisclient.Nil) {
-		return nil, fmt.Errorf("validate agent relays: %w", err)
-	}
-
-	agents := make([]registry.Agent, 0, len(candidates))
-	for i, candidate := range candidates {
-		exists, err := relayCommands[i].Result()
+		lastHeartbeat, err := decodeUnixMilli(values[1])
 		if err != nil {
-			return nil, fmt.Errorf("validate relay for agent %q: %w", candidate.id, err)
+			return nil, fmt.Errorf("decode agent %q: %w", ids[i], err)
 		}
-		if exists == 0 {
-			staleIDs = append(staleIDs, candidate.id)
-			continue
-		}
-		lastHeartbeat, err := decodeUnixMilli(candidate.lastSeen)
-		if err != nil {
-			return nil, fmt.Errorf("decode agent %q: %w", candidate.id, err)
-		}
-		agents = append(agents, registry.Agent{ID: candidate.id, LastHeartbeat: lastHeartbeat})
+		agents = append(agents, registry.Agent{ID: values[0], LastHeartbeat: lastHeartbeat})
 	}
-	b.removeStaleIndexMembers(ctx, b.agentsKey(), staleIDs)
 
 	sort.Slice(agents, func(i, j int) bool { return agents[i].ID < agents[j].ID })
 	return agents, nil
 }
 
 func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*registry.Agent, error) {
-	if exists, err := b.client.Exists(ctx, b.relayKey(relayID)).Result(); err != nil {
+	relayIncarnation, err := b.client.HGet(ctx, b.relayKey(relayID), "incarnation").Result()
+	if err != nil && !errors.Is(err, redisclient.Nil) {
 		return nil, fmt.Errorf("check relay %q: %w", relayID, err)
-	} else if exists == 0 {
+	} else if errors.Is(err, redisclient.Nil) || relayIncarnation == "" {
 		return nil, errRelayNotRegistered
 	}
 
@@ -316,47 +286,42 @@ func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*regis
 	}
 
 	pipe := b.client.Pipeline()
-	commands := make([]*redisclient.SliceCmd, len(ids))
+	commands := make([]*redisclient.Cmd, len(ids))
 	for i, id := range ids {
-		commands[i] = pipe.HMGet(ctx, b.agentKey(id), "id", "last_heartbeat_ms", "relay_id")
+		commands[i] = readRelayAgentScript.Eval(ctx, pipe,
+			[]string{b.agentKey(id), b.agentsKey(), b.relayAgentsKey(relayID), b.relayKey(relayID)},
+			id, relayID, relayIncarnation,
+		)
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redisclient.Nil) {
 		return nil, fmt.Errorf("read agents for relay %q: %w", relayID, err)
 	}
 
 	agents := make([]*registry.Agent, 0, len(ids))
-	staleIDs := make([]interface{}, 0)
 	for i := range commands {
-		values, err := commands[i].Result()
+		values, err := commands[i].StringSlice()
+		if errors.Is(err, redisclient.Nil) || (err == nil && len(values) == 0) {
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read relay agent %q: %w", ids[i], err)
 		}
-		id, okID := redisString(values, 0)
-		lastSeen, okLastSeen := redisString(values, 1)
-		placedRelayID, okRelayID := redisString(values, 2)
-		if !okID && !okLastSeen && !okRelayID {
-			staleIDs = append(staleIDs, ids[i])
-			continue
+		if len(values) != 2 {
+			return nil, fmt.Errorf("read relay agent %q: corrupt redis response", ids[i])
 		}
-		if !okID || !okLastSeen || !okRelayID {
-			return nil, fmt.Errorf("decode relay agent %q: incomplete redis record", ids[i])
-		}
-		if placedRelayID != relayID {
-			staleIDs = append(staleIDs, ids[i])
-			continue
-		}
-		lastHeartbeat, err := decodeUnixMilli(lastSeen)
+		lastHeartbeat, err := decodeUnixMilli(values[1])
 		if err != nil {
-			return nil, fmt.Errorf("decode relay agent %q: %w", id, err)
+			return nil, fmt.Errorf("decode relay agent %q: %w", ids[i], err)
 		}
-		agents = append(agents, &registry.Agent{ID: id, LastHeartbeat: lastHeartbeat})
+		agents = append(agents, &registry.Agent{ID: values[0], LastHeartbeat: lastHeartbeat})
 	}
-	b.removeStaleIndexMembers(ctx, b.relayAgentsKey(relayID), staleIDs)
 
-	// Do not report a placement snapshot for a relay that expired during the read.
-	if exists, err := b.client.Exists(ctx, b.relayKey(relayID)).Result(); err != nil {
+	// Do not report a placement snapshot for a relay that expired or was
+	// re-registered during the read.
+	currentIncarnation, err := b.client.HGet(ctx, b.relayKey(relayID), "incarnation").Result()
+	if err != nil && !errors.Is(err, redisclient.Nil) {
 		return nil, fmt.Errorf("recheck relay %q: %w", relayID, err)
-	} else if exists == 0 {
+	} else if errors.Is(err, redisclient.Nil) || currentIncarnation != relayIncarnation {
 		return nil, errRelayNotRegistered
 	}
 
@@ -407,6 +372,7 @@ func (b *Backend) agentKey(id string) string {
 func (b *Backend) relayAgentsKey(id string) string {
 	return b.namespace + "relay-agents:" + encodeID(id)
 }
+func (b *Backend) relayIncarnationKey() string { return b.namespace + "relay-incarnation-sequence" }
 
 func encodeID(id string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(id))
@@ -438,6 +404,9 @@ func decodeRelay(fields map[string]string) (registry.Relay, error) {
 	}
 	if fields["address"] == "" {
 		return registry.Relay{}, errors.New("missing address")
+	}
+	if fields["incarnation"] == "" {
+		return registry.Relay{}, errors.New("missing incarnation")
 	}
 	port, err := strconv.ParseInt(fields["grpc_port"], 10, 32)
 	if err != nil {
@@ -481,19 +450,25 @@ local now_ms = now[1] .. string.format('%03d', math.floor(tonumber(now[2]) / 100
 
 var registerRelayScript = redisclient.NewScript(redisNowMilliseconds + `
 local expires_ms = tonumber(now_ms) + tonumber(ARGV[4])
+local incarnation = redis.call('HGET', KEYS[1], 'incarnation')
+if not incarnation then
+  incarnation = tostring(redis.call('INCR', KEYS[4]))
+  redis.call('DEL', KEYS[3])
+end
 redis.call('HSET', KEYS[1],
   'id', ARGV[1],
   'address', ARGV[2],
   'grpc_port', ARGV[3],
+  'incarnation', incarnation,
   'last_seen_ms', now_ms)
 redis.call('PEXPIRE', KEYS[1], ARGV[4])
 redis.call('ZADD', KEYS[2], expires_ms, ARGV[1])
 if redis.call('EXISTS', KEYS[3]) == 1 then redis.call('PEXPIRE', KEYS[3], ARGV[4]) end
-return now_ms
+return incarnation
 `)
 
 var heartbeatRelayScript = redisclient.NewScript(redisNowMilliseconds + `
-if redis.call('EXISTS', KEYS[1]) == 0 then
+if not redis.call('HGET', KEYS[1], 'incarnation') then
   return 0
 end
 local expires_ms = tonumber(now_ms) + tonumber(ARGV[2])
@@ -517,7 +492,8 @@ return 1
 `)
 
 var registerAgentScript = redisclient.NewScript(redisNowMilliseconds + `
-if redis.call('EXISTS', KEYS[3]) == 0 then
+local relay_incarnation = redis.call('HGET', KEYS[3], 'incarnation')
+if not relay_incarnation then
   return 0
 end
 local expires_ms = tonumber(now_ms) + tonumber(ARGV[3])
@@ -530,6 +506,7 @@ redis.call('HSET', KEYS[1],
   'last_heartbeat_ms', now_ms,
   'relay_id', ARGV[2],
   'relay_key', KEYS[3],
+  'relay_incarnation', relay_incarnation,
   'relay_agents_key', KEYS[4],
   'placement_updated_ms', now_ms)
 redis.call('PEXPIRE', KEYS[1], ARGV[3])
@@ -546,7 +523,8 @@ if redis.call('EXISTS', KEYS[1]) == 0 then
 end
 local relay_key = redis.call('HGET', KEYS[1], 'relay_key')
 local relay_agents_key = redis.call('HGET', KEYS[1], 'relay_agents_key')
-if not relay_key or redis.call('EXISTS', relay_key) == 0 then
+local relay_incarnation = redis.call('HGET', KEYS[1], 'relay_incarnation')
+if not relay_key or not relay_incarnation or redis.call('HGET', relay_key, 'incarnation') ~= relay_incarnation then
   redis.call('DEL', KEYS[1])
   redis.call('ZREM', KEYS[2], ARGV[1])
   if relay_agents_key then redis.call('ZREM', relay_agents_key, ARGV[1]) end
@@ -570,13 +548,74 @@ if redis.call('EXISTS', KEYS[1]) == 0 then
 end
 local relay_key = redis.call('HGET', KEYS[1], 'relay_key')
 local relay_agents_key = redis.call('HGET', KEYS[1], 'relay_agents_key')
-if not relay_key or redis.call('EXISTS', relay_key) == 0 then
+local relay_incarnation = redis.call('HGET', KEYS[1], 'relay_incarnation')
+if not relay_key or not relay_incarnation or redis.call('HGET', relay_key, 'incarnation') ~= relay_incarnation then
   redis.call('DEL', KEYS[1])
   redis.call('ZREM', KEYS[2], ARGV[1])
   if relay_agents_key then redis.call('ZREM', relay_agents_key, ARGV[1]) end
   return nil
 end
 return redis.call('HMGET', KEYS[1], 'id', 'relay_id', 'placement_updated_ms')
+`)
+
+var readLiveAgentScript = redisclient.NewScript(`
+local function remove_agent()
+  local relay_agents_key = redis.call('HGET', KEYS[1], 'relay_agents_key')
+  if relay_agents_key then redis.call('ZREM', relay_agents_key, ARGV[1]) end
+  redis.call('DEL', KEYS[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+end
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  return nil
+end
+local values = redis.call('HMGET', KEYS[1],
+  'id', 'last_heartbeat_ms', 'relay_id', 'relay_key',
+  'relay_incarnation', 'relay_agents_key', 'placement_updated_ms')
+if not values[1] or values[1] ~= ARGV[1] or
+   not values[2] or not string.match(values[2], '^%d+$') or
+   not values[3] or not values[4] or not values[5] or
+   not values[6] or not values[7] then
+  remove_agent()
+  return nil
+end
+if redis.call('HGET', values[4], 'incarnation') ~= values[5] then
+  remove_agent()
+  return nil
+end
+return {values[1], values[2]}
+`)
+
+var readRelayAgentScript = redisclient.NewScript(`
+local function remove_agent()
+  local relay_agents_key = redis.call('HGET', KEYS[1], 'relay_agents_key')
+  if relay_agents_key then redis.call('ZREM', relay_agents_key, ARGV[1]) end
+  redis.call('DEL', KEYS[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  redis.call('ZREM', KEYS[3], ARGV[1])
+end
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  redis.call('ZREM', KEYS[3], ARGV[1])
+  return nil
+end
+local values = redis.call('HMGET', KEYS[1],
+  'id', 'last_heartbeat_ms', 'relay_id', 'relay_key',
+  'relay_incarnation', 'relay_agents_key', 'placement_updated_ms')
+if not values[1] or values[1] ~= ARGV[1] or
+   not values[2] or not string.match(values[2], '^%d+$') or
+   not values[3] or values[3] ~= ARGV[2] or
+   not values[4] or values[4] ~= KEYS[4] or
+   not values[5] or values[5] ~= ARGV[3] or
+   not values[6] or values[6] ~= KEYS[3] or not values[7] then
+  remove_agent()
+  return nil
+end
+if redis.call('HGET', KEYS[4], 'incarnation') ~= values[5] then
+  remove_agent()
+  return nil
+end
+return {values[1], values[2]}
 `)
 
 var removeAgentsScript = redisclient.NewScript(`
