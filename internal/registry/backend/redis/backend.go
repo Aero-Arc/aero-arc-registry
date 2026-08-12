@@ -88,6 +88,9 @@ func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error
 	if relay.Address == "" {
 		return fmt.Errorf("relay address is empty: %w", registry.ErrInvalid)
 	}
+	if relay.GRPCPort <= 0 || relay.GRPCPort > 65535 {
+		return fmt.Errorf("relay grpc port %d is outside 1-65535: %w", relay.GRPCPort, registry.ErrInvalid)
+	}
 
 	_, err := registerRelayScript.Run(ctx, b.client,
 		[]string{b.relayKey(relay.ID), b.relaysKey(), b.relayAgentsKey(relay.ID), b.relayIncarnationKey()},
@@ -123,32 +126,40 @@ func (b *Backend) ListRelays(ctx context.Context) ([]registry.Relay, error) {
 	}
 
 	pipe := b.client.Pipeline()
-	commands := make([]*redisclient.MapStringStringCmd, len(ids))
+	commands := make([]*redisclient.Cmd, len(ids))
 	for i, id := range ids {
-		commands[i] = pipe.HGetAll(ctx, b.relayKey(id))
+		commands[i] = readLiveRelayScript.Eval(ctx, pipe,
+			[]string{b.relayKey(id), b.relaysKey(), b.relayAgentsKey(id)}, id,
+		)
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redisclient.Nil) {
 		return nil, fmt.Errorf("read relays: %w", err)
 	}
 
 	relays := make([]registry.Relay, 0, len(ids))
-	staleIDs := make([]interface{}, 0)
 	for i, command := range commands {
-		fields, err := command.Result()
+		fields, err := command.StringSlice()
+		if errors.Is(err, redisclient.Nil) || (err == nil && len(fields) == 0) {
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read relay %q: %w", ids[i], err)
 		}
-		if len(fields) == 0 {
-			staleIDs = append(staleIDs, ids[i])
-			continue
+		if len(fields) != 5 {
+			return nil, fmt.Errorf("read relay %q: corrupt redis response", ids[i])
 		}
-		relay, err := decodeRelay(fields)
+		port, err := strconv.ParseInt(fields[2], 10, 32)
 		if err != nil {
-			return nil, fmt.Errorf("decode relay %q: %w", ids[i], err)
+			return nil, fmt.Errorf("decode relay %q grpc port: %w", ids[i], err)
 		}
-		relays = append(relays, relay)
+		lastSeen, err := decodeUnixMilli(fields[4])
+		if err != nil {
+			return nil, fmt.Errorf("decode relay %q last seen: %w", ids[i], err)
+		}
+		relays = append(relays, registry.Relay{
+			ID: fields[0], Address: fields[1], GRPCPort: int32(port), LastSeen: lastSeen,
+		})
 	}
-	b.removeStaleIndexMembers(ctx, b.relaysKey(), staleIDs)
 
 	sort.Slice(relays, func(i, j int) bool { return relays[i].ID < relays[j].ID })
 	return relays, nil
@@ -378,15 +389,6 @@ func encodeID(id string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(id))
 }
 
-func (b *Backend) removeStaleIndexMembers(ctx context.Context, key string, members []interface{}) {
-	if len(members) == 0 || ctx.Err() != nil {
-		return
-	}
-	// Index repair is best effort. Missing entity hashes are already excluded
-	// from the response, so cleanup failure does not make the read incorrect.
-	_ = b.client.ZRem(ctx, key, members...).Err()
-}
-
 func (b *Backend) activeIndexIDs(ctx context.Context, key string) ([]string, error) {
 	ids, err := activeIndexScript.Run(ctx, b.client, []string{key}).StringSlice()
 	if errors.Is(err, redisclient.Nil) {
@@ -396,32 +398,6 @@ func (b *Backend) activeIndexIDs(ctx context.Context, key string) ([]string, err
 		return nil, err
 	}
 	return ids, nil
-}
-
-func decodeRelay(fields map[string]string) (registry.Relay, error) {
-	if fields["id"] == "" {
-		return registry.Relay{}, errors.New("missing id")
-	}
-	if fields["address"] == "" {
-		return registry.Relay{}, errors.New("missing address")
-	}
-	if fields["incarnation"] == "" {
-		return registry.Relay{}, errors.New("missing incarnation")
-	}
-	port, err := strconv.ParseInt(fields["grpc_port"], 10, 32)
-	if err != nil {
-		return registry.Relay{}, fmt.Errorf("invalid grpc_port: %w", err)
-	}
-	lastSeen, err := decodeUnixMilli(fields["last_seen_ms"])
-	if err != nil {
-		return registry.Relay{}, fmt.Errorf("invalid last_seen_ms: %w", err)
-	}
-	return registry.Relay{
-		ID:       fields["id"],
-		Address:  fields["address"],
-		GRPCPort: int32(port),
-		LastSeen: lastSeen,
-	}, nil
 }
 
 func decodeUnixMilli(value string) (time.Time, error) {
@@ -469,6 +445,41 @@ redis.call('PEXPIRE', KEYS[1], ARGV[2])
 redis.call('ZADD', KEYS[2], expires_ms, ARGV[1])
 if redis.call('EXISTS', KEYS[3]) == 1 then redis.call('PEXPIRE', KEYS[3], ARGV[2]) end
 return 1
+`)
+
+var readLiveRelayScript = redisclient.NewScript(`
+local function remove_relay()
+  redis.call('DEL', KEYS[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  redis.call('DEL', KEYS[3])
+end
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  redis.call('DEL', KEYS[3])
+  return nil
+end
+local values = redis.call('HMGET', KEYS[1],
+  'id', 'address', 'grpc_port', 'incarnation', 'last_seen_ms')
+local port = values[3] and tonumber(values[3])
+local function valid_nonnegative_int64(value)
+  if not value or not string.match(value, '^%d+$') then return false end
+  if string.len(value) > 19 or
+     (string.len(value) == 19 and value > '9223372036854775807') then
+    return false
+  end
+  return true
+end
+local valid_incarnation = valid_nonnegative_int64(values[4]) and tonumber(values[4]) > 0
+local valid_timestamp = valid_nonnegative_int64(values[5])
+if not values[1] or values[1] ~= ARGV[1] or
+   not values[2] or values[2] == '' or
+   not values[3] or not string.match(values[3], '^%d+$') or
+   not port or port < 1 or port > 65535 or
+   not valid_incarnation or not valid_timestamp then
+  remove_relay()
+  return nil
+end
+return values
 `)
 
 var removeRelayScript = redisclient.NewScript(`

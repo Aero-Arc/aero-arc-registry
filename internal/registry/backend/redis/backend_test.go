@@ -123,21 +123,127 @@ func TestRelayLifecycle(t *testing.T) {
 	}
 }
 
-func TestRelayValidationAndCorruptRecord(t *testing.T) {
+func TestListRelaysOmitsAndAtomicallyRepairsCorruptRecords(t *testing.T) {
 	backend, _ := newTestBackend(t, 5*time.Second, 5*time.Second)
 	ctx := context.Background()
 
 	if err := backend.RegisterRelay(ctx, registry.Relay{ID: "missing-address", GRPCPort: 50051}); !errors.Is(err, registry.ErrInvalid) {
 		t.Fatalf("RegisterRelay(empty address) error = %v, want ErrInvalid", err)
 	}
-
-	registerRelay(t, backend, "relay-corrupt")
-	if err := backend.client.HDel(ctx, backend.relayKey("relay-corrupt"), "address").Err(); err != nil {
-		t.Fatalf("HDel(address) error = %v", err)
+	for _, port := range []int32{0, 65536} {
+		if err := backend.RegisterRelay(ctx, registry.Relay{ID: "invalid-port", Address: "127.0.0.1", GRPCPort: port}); !errors.Is(err, registry.ErrInvalid) {
+			t.Fatalf("RegisterRelay(port %d) error = %v, want ErrInvalid", port, err)
+		}
 	}
 
-	if _, err := backend.ListRelays(ctx); err == nil || !strings.Contains(err.Error(), "missing address") {
-		t.Fatalf("ListRelays(corrupt address) error = %v, want missing address error", err)
+	registerRelay(t, backend, "relay-healthy-a")
+	registerRelay(t, backend, "relay-healthy-b")
+
+	corruptions := map[string]func() error{
+		"relay-missing-address": func() error {
+			return backend.client.HDel(ctx, backend.relayKey("relay-missing-address"), "address").Err()
+		},
+		"relay-invalid-port": func() error {
+			return backend.client.HSet(ctx, backend.relayKey("relay-invalid-port"), "grpc_port", "not-a-port").Err()
+		},
+		"relay-missing-port": func() error {
+			return backend.client.HDel(ctx, backend.relayKey("relay-missing-port"), "grpc_port").Err()
+		},
+		"relay-out-of-range-port": func() error {
+			return backend.client.HSet(ctx, backend.relayKey("relay-out-of-range-port"), "grpc_port", "65536").Err()
+		},
+		"relay-missing-incarnation": func() error {
+			return backend.client.HDel(ctx, backend.relayKey("relay-missing-incarnation"), "incarnation").Err()
+		},
+		"relay-invalid-incarnation": func() error {
+			return backend.client.HSet(ctx, backend.relayKey("relay-invalid-incarnation"), "incarnation", "not-an-incarnation").Err()
+		},
+		"relay-missing-timestamp": func() error {
+			return backend.client.HDel(ctx, backend.relayKey("relay-missing-timestamp"), "last_seen_ms").Err()
+		},
+		"relay-invalid-timestamp": func() error {
+			return backend.client.HSet(ctx, backend.relayKey("relay-invalid-timestamp"), "last_seen_ms", "9223372036854775808").Err()
+		},
+		"relay-wrong-id": func() error {
+			return backend.client.HSet(ctx, backend.relayKey("relay-wrong-id"), "id", "another-relay").Err()
+		},
+	}
+	corruptIDs := make([]string, 0, len(corruptions))
+	for relayID, corrupt := range corruptions {
+		corruptIDs = append(corruptIDs, relayID)
+		registerRelay(t, backend, relayID)
+		registerAgent(t, backend, "agent-for-"+relayID, relayID)
+		if err := corrupt(); err != nil {
+			t.Fatalf("corrupt %q: %v", relayID, err)
+		}
+	}
+
+	relays, err := backend.ListRelays(ctx)
+	if err != nil {
+		t.Fatalf("ListRelays() error = %v", err)
+	}
+	if len(relays) != 2 || relays[0].ID != "relay-healthy-a" || relays[1].ID != "relay-healthy-b" {
+		t.Fatalf("ListRelays() = %+v, want two healthy relays", relays)
+	}
+
+	for _, relayID := range corruptIDs {
+		if exists := backend.client.Exists(ctx, backend.relayKey(relayID)).Val(); exists != 0 {
+			t.Fatalf("corrupt relay hash %q was not removed", relayID)
+		}
+		if err := backend.client.ZScore(ctx, backend.relaysKey(), relayID).Err(); !errors.Is(err, redisclient.Nil) {
+			t.Fatalf("relay index still contains %q: %v", relayID, err)
+		}
+		if exists := backend.client.Exists(ctx, backend.relayAgentsKey(relayID)).Val(); exists != 0 {
+			t.Fatalf("relay membership index %q was not removed", relayID)
+		}
+	}
+}
+
+func TestListRelaysRepairDoesNotDeleteConcurrentRegistration(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+
+	for i := 0; i < 64; i++ {
+		relayID := fmt.Sprintf("relay-race-%d", i)
+		registerRelay(t, backend, relayID)
+		if err := backend.client.HDel(ctx, backend.relayKey(relayID), "address").Err(); err != nil {
+			t.Fatal(err)
+		}
+
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() {
+			<-start
+			_, err := backend.ListRelays(ctx)
+			errs <- err
+		}()
+		go func() {
+			<-start
+			errs <- backend.RegisterRelay(ctx, registry.Relay{
+				ID: relayID, Address: "127.0.0.1", GRPCPort: 50051,
+			})
+		}()
+		close(start)
+		for range 2 {
+			if err := <-errs; err != nil {
+				t.Fatalf("concurrent relay repair/register: %v", err)
+			}
+		}
+
+		relays, err := backend.ListRelays(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, relay := range relays {
+			if relay.ID == relayID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("concurrent repair deleted fresh registration %q", relayID)
+		}
 	}
 }
 

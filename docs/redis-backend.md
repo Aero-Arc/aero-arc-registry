@@ -31,7 +31,7 @@ The namespace contains a Redis hash tag so related keys share a slot. The curren
 
 ## Failure behavior
 
-Redis and context errors are returned to the gRPC layer. Missing or expired entities map to `registry.ErrNotFound`. Agent lists atomically omit and repair incomplete, invalid, or old-incarnation records instead of failing the entire list. Corrupt relay records fail their list/read operation rather than returning partially decoded endpoints. Secondary-index cleanup for already-expired hashes is best effort because stale members are excluded from responses.
+Redis and context errors are returned to the gRPC layer. Missing or expired entities map to `registry.ErrNotFound`. Relay and agent lists atomically omit and repair incomplete, invalid, or old-incarnation records instead of failing the entire list. Relay repair removes the corrupt hash, global index entry, and relay-membership index in one Lua operation; agent repair similarly removes its hash and index memberships.
 
 ## Tests
 

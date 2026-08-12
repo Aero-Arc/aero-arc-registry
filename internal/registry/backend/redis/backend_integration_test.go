@@ -39,8 +39,11 @@ func TestRedisIntegration(t *testing.T) {
 		defer cleanupCancel()
 		_ = client.Del(cleanupCtx,
 			backend.relayKey("relay-integration"),
+			backend.relayKey("relay-corrupt"),
 			backend.agentKey("agent-integration"),
+			backend.agentKey("agent-corrupt"),
 			backend.relayAgentsKey("relay-integration"),
+			backend.relayAgentsKey("relay-corrupt"),
 			backend.relayIncarnationKey(),
 			backend.relaysKey(),
 			backend.agentsKey(),
@@ -91,7 +94,25 @@ func TestRedisIntegration(t *testing.T) {
 		t.Fatalf("agent PTTL = %v, error = %v", ttl, err)
 	}
 
-	if err := backend.RemoveAgents(ctx, []string{"agent-integration"}); err != nil {
+	registerRelay(t, backend, "relay-corrupt")
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-corrupt"}, "relay-corrupt"); err != nil {
+		t.Fatalf("RegisterAgent(corrupt relay) error = %v", err)
+	}
+	if err := client.HDel(ctx, backend.relayKey("relay-corrupt"), "address").Err(); err != nil {
+		t.Fatalf("corrupt relay address: %v", err)
+	}
+	relays, err = backend.ListRelays(ctx)
+	if err != nil || len(relays) != 1 || relays[0].ID != "relay-integration" {
+		t.Fatalf("ListRelays() with corrupt neighbor = %+v, error = %v", relays, err)
+	}
+	if exists := client.Exists(ctx, backend.relayKey("relay-corrupt"), backend.relayAgentsKey("relay-corrupt")).Val(); exists != 0 {
+		t.Fatalf("corrupt relay repair left %d keys", exists)
+	}
+	if err := client.ZScore(ctx, backend.relaysKey(), "relay-corrupt").Err(); !errors.Is(err, redisclient.Nil) {
+		t.Fatalf("relay index still contains corrupt relay: %v", err)
+	}
+
+	if err := backend.RemoveAgents(ctx, []string{"agent-integration", "agent-corrupt"}); err != nil {
 		t.Fatalf("RemoveAgents() error = %v", err)
 	}
 	if err := backend.RemoveRelay(ctx, "relay-integration"); err != nil {
