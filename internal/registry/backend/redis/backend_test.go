@@ -117,6 +117,24 @@ func TestRelayLifecycle(t *testing.T) {
 	}
 }
 
+func TestRelayValidationAndCorruptRecord(t *testing.T) {
+	backend, _ := newTestBackend(t, 5*time.Second, 5*time.Second)
+	ctx := context.Background()
+
+	if err := backend.RegisterRelay(ctx, registry.Relay{ID: "missing-address", GRPCPort: 50051}); !errors.Is(err, registry.ErrInvalid) {
+		t.Fatalf("RegisterRelay(empty address) error = %v, want ErrInvalid", err)
+	}
+
+	registerRelay(t, backend, "relay-corrupt")
+	if err := backend.client.HDel(ctx, backend.relayKey("relay-corrupt"), "address").Err(); err != nil {
+		t.Fatalf("HDel(address) error = %v", err)
+	}
+
+	if _, err := backend.ListRelays(ctx); err == nil || !strings.Contains(err.Error(), "missing address") {
+		t.Fatalf("ListRelays(corrupt address) error = %v, want missing address error", err)
+	}
+}
+
 func TestAgentLifecycleAndAtomicReassignment(t *testing.T) {
 	backend, _ := newTestBackend(t, 10*time.Second, 5*time.Second)
 	ctx := context.Background()

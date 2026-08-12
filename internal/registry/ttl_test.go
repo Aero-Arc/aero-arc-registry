@@ -89,6 +89,48 @@ func TestRunTTLCleanupSkipsWhenCleanupAlreadyInProgress(t *testing.T) {
 	}
 }
 
+func TestRunTTLCleanupDefersToBackendManagedTTL(t *testing.T) {
+	backend := &nativeTTLBackend{ttlCleanupBackend: newTTLCleanupBackend()}
+	backend.relays["relay-renewed"] = Relay{
+		ID:       "relay-renewed",
+		LastSeen: time.Now(),
+	}
+	backend.agents["agent-renewed"] = Agent{
+		ID:            "agent-renewed",
+		LastHeartbeat: time.Now(),
+	}
+
+	reg := &Registry{
+		cfg: &Config{
+			TTL: TTLConfig{
+				Relay: 30 * time.Second,
+				Agent: 30 * time.Second,
+			},
+		},
+		backend: backend,
+	}
+
+	// Simulate a service clock far ahead of the backend clock. Backend-owned
+	// expiry must prevent the local sweeper from deleting renewed entities.
+	if err := reg.runTTLCleanup(context.Background(), time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("runTTLCleanup returned error: %v", err)
+	}
+	if got := backend.calls(); len(got) != 0 {
+		t.Fatalf("backend-managed TTL should bypass service cleanup, got calls %v", got)
+	}
+	if _, exists := backend.relays["relay-renewed"]; !exists {
+		t.Fatal("backend-managed relay was removed by local-clock cleanup")
+	}
+	if _, exists := backend.agents["agent-renewed"]; !exists {
+		t.Fatal("backend-managed agent was removed by local-clock cleanup")
+	}
+
+	reg.RunTTL(context.Background())
+	if reg.ttlLoopRunning.Load() {
+		t.Fatal("TTL loop started for a backend that manages expiry")
+	}
+}
+
 func TestRunTTLCleanupDoesNotRemoveRelayRefreshedDuringCleanup(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 
@@ -176,6 +218,12 @@ type ttlCleanupBackend struct {
 	onListRelays    func(b *ttlCleanupBackend, callNum int)
 	onListAgents    func(b *ttlCleanupBackend, callNum int)
 }
+
+type nativeTTLBackend struct {
+	*ttlCleanupBackend
+}
+
+func (b *nativeTTLBackend) ManagesTTL() bool { return true }
 
 func newTTLCleanupBackend() *ttlCleanupBackend {
 	return &ttlCleanupBackend{

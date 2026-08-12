@@ -33,7 +33,7 @@ In the broader Aero Arc system, the registry sits between relays/agents and cont
 
 ## Status / Roadmap
 - The in-memory backend is intended for local development and tests.
-- The Redis backend is the production backend. It uses Redis-native expiration in addition to the registry TTL sweep, atomic placement updates, and server-side timestamps.
+- The Redis backend is the production backend. It uses Redis-native expiration, atomic placement updates, and server-side timestamps; the local-clock registry sweep is disabled for Redis.
 - Consul and etcd currently return `ErrNotImplemented`.
 - Backward-compatible API evolution is prioritized over feature expansion.
 

@@ -11,7 +11,7 @@ Redis is the production registry backend. It stores only current control-plane s
 - Sorted-set indexes carry the same expiry deadline as their entities. Reads prune expired members and ignore hashes that expired between the index and entity reads.
 - Listing is deterministic by ID. The backend provides current, eventually consistent state and does not provide historical events or global ordering.
 
-The service-level TTL sweep remains enabled for every backend. With Redis it is a secondary cleanup path; native expiry is the liveness boundary if the registry process stops before its next sweep.
+The service-level TTL sweep is disabled for Redis. Redis `TIME` and native key expiry are the sole liveness authority, avoiding incorrect deletions when a registry replica's clock differs from the Redis server. Backends without native TTL support, including the in-memory backend, continue to use the service-level sweep.
 
 ## Key model
 

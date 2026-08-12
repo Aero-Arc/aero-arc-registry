@@ -23,10 +23,11 @@ var (
 	errAgentNotRegistered = fmt.Errorf("agent not registered: %w", registry.ErrNotFound)
 )
 
-// Backend persists current registry state in Redis. Entity hashes have native
-// Redis expirations as a crash-safe complement to the registry's TTL sweeper.
-// Secondary indexes are advisory; reads ignore and opportunistically remove
-// index members whose entity hash has expired.
+// Backend persists current registry state in Redis. Redis TIME and native key
+// expirations are the liveness authority; the registry's local-clock TTL
+// sweeper is disabled for this backend. Secondary indexes are advisory; reads
+// ignore and opportunistically remove index members whose entity hash has
+// expired.
 type Backend struct {
 	client    *redisclient.Client
 	ttl       registry.TTLConfig
@@ -35,6 +36,8 @@ type Backend struct {
 	closeOnce sync.Once
 	closeErr  error
 }
+
+var _ registry.TTLManagedBackend = (*Backend)(nil)
 
 // New constructs a Redis backend. The client establishes its network
 // connection lazily on the first operation.
@@ -73,9 +76,17 @@ func newBackend(client *redisclient.Client, ttl registry.TTLConfig, namespace st
 	}
 }
 
+// ManagesTTL reports that Redis atomically enforces entity expiry using Redis
+// server time. The service-level sweeper must not compare these timestamps to
+// its local clock.
+func (b *Backend) ManagesTTL() bool { return true }
+
 func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error {
 	if relay.ID == "" {
 		return fmt.Errorf("relay id is empty: %w", registry.ErrInvalid)
+	}
+	if relay.Address == "" {
+		return fmt.Errorf("relay address is empty: %w", registry.ErrInvalid)
 	}
 
 	_, err := registerRelayScript.Run(ctx, b.client,
@@ -422,6 +433,12 @@ func (b *Backend) activeIndexIDs(ctx context.Context, key string) ([]string, err
 }
 
 func decodeRelay(fields map[string]string) (registry.Relay, error) {
+	if fields["id"] == "" {
+		return registry.Relay{}, errors.New("missing id")
+	}
+	if fields["address"] == "" {
+		return registry.Relay{}, errors.New("missing address")
+	}
 	port, err := strconv.ParseInt(fields["grpc_port"], 10, 32)
 	if err != nil {
 		return registry.Relay{}, fmt.Errorf("invalid grpc_port: %w", err)
@@ -429,9 +446,6 @@ func decodeRelay(fields map[string]string) (registry.Relay, error) {
 	lastSeen, err := decodeUnixMilli(fields["last_seen_ms"])
 	if err != nil {
 		return registry.Relay{}, fmt.Errorf("invalid last_seen_ms: %w", err)
-	}
-	if fields["id"] == "" {
-		return registry.Relay{}, errors.New("missing id")
 	}
 	return registry.Relay{
 		ID:       fields["id"],
