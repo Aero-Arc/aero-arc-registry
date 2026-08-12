@@ -39,10 +39,12 @@ func TestRedisIntegration(t *testing.T) {
 		defer cleanupCancel()
 		_ = client.Del(cleanupCtx,
 			backend.relayKey("relay-integration"),
+			backend.relayKey("relay-takeover"),
 			backend.relayKey("relay-corrupt"),
 			backend.agentKey("agent-integration"),
 			backend.agentKey("agent-corrupt"),
 			backend.relayAgentsKey("relay-integration"),
+			backend.relayAgentsKey("relay-takeover"),
 			backend.relayAgentsKey("relay-corrupt"),
 			backend.relayIncarnationKey(),
 			backend.relaysKey(),
@@ -83,12 +85,34 @@ func TestRedisIntegration(t *testing.T) {
 	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-integration"}, "relay-integration"); err != nil {
 		t.Fatalf("RegisterAgent(current incarnation) error = %v", err)
 	}
+	registerRelay(t, backend, "relay-takeover")
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-integration"}, "relay-takeover"); err != nil {
+		t.Fatalf("RegisterAgent(takeover) error = %v", err)
+	}
+	placementAfterTakeover, err := backend.GetAgentPlacement(ctx, "agent-integration")
+	if err != nil {
+		t.Fatalf("GetAgentPlacement(takeover) error = %v", err)
+	}
+	ttlAfterTakeover, err := client.PTTL(ctx, backend.agentKey("agent-integration")).Result()
+	if err != nil {
+		t.Fatalf("agent PTTL after takeover: %v", err)
+	}
+	if err := backend.HeartbeatAgent(ctx, "agent-integration", "relay-integration"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("HeartbeatAgent(old owner) error = %v, want ErrNotFound", err)
+	}
+	if ttl, err := client.PTTL(ctx, backend.agentKey("agent-integration")).Result(); err != nil || ttl > ttlAfterTakeover {
+		t.Fatalf("rejected heartbeat renewed TTL: before=%v after=%v error=%v", ttlAfterTakeover, ttl, err)
+	}
+	placementAfterRejected, err := backend.GetAgentPlacement(ctx, "agent-integration")
+	if err != nil || *placementAfterRejected != *placementAfterTakeover {
+		t.Fatalf("rejected heartbeat changed placement: before=%+v after=%+v error=%v", placementAfterTakeover, placementAfterRejected, err)
+	}
+	if err := backend.HeartbeatAgent(ctx, "agent-integration", "relay-takeover"); err != nil {
+		t.Fatalf("HeartbeatAgent(current owner) error = %v", err)
+	}
 
 	if err := backend.HeartbeatRelay(ctx, "relay-integration"); err != nil {
 		t.Fatalf("HeartbeatRelay() error = %v", err)
-	}
-	if err := backend.HeartbeatAgent(ctx, "agent-integration"); err != nil {
-		t.Fatalf("HeartbeatAgent() error = %v", err)
 	}
 	if ttl, err := client.PTTL(ctx, backend.agentKey("agent-integration")).Result(); err != nil || ttl <= 0 {
 		t.Fatalf("agent PTTL = %v, error = %v", ttl, err)
@@ -117,5 +141,8 @@ func TestRedisIntegration(t *testing.T) {
 	}
 	if err := backend.RemoveRelay(ctx, "relay-integration"); err != nil {
 		t.Fatalf("RemoveRelay() error = %v", err)
+	}
+	if err := backend.RemoveRelay(ctx, "relay-takeover"); err != nil {
+		t.Fatalf("RemoveRelay(takeover) error = %v", err)
 	}
 }

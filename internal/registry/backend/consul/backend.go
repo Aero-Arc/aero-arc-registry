@@ -35,7 +35,7 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 	return registry.ErrNotImplemented
 }
 
-func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string) error {
+func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	return registry.ErrNotImplemented
 }
 

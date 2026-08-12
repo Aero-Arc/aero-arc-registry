@@ -180,16 +180,21 @@ func (s *Server) HeartbeatAgent(ctx context.Context, req *registryv1.HeartbeatAg
 	if req.AgentId == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "AgentId is required")
 	}
+	if req.RelayId == "" {
+		return nil, status.Error(codes.InvalidArgument, "RelayId is required")
+	}
 
 	slog.LogAttrs(ctx, slog.LevelDebug, "received request",
 		slog.String("method", "HeartbeatAgent"),
 		slog.String("agent_id", req.AgentId),
+		slog.String("relay_id", req.RelayId),
 	)
 
-	if err := s.registry.HeartbeatAgent(ctx, req.AgentId); err != nil {
+	if err := s.registry.HeartbeatAgent(ctx, req.AgentId, req.RelayId); err != nil {
 		slog.LogAttrs(ctx, slog.LevelError, "failed to track agent heartbeat",
 			slog.String("error", err.Error()),
 			slog.String("agent_id", req.AgentId),
+			slog.String("relay_id", req.RelayId),
 		)
 		return nil, toStatusError(err)
 	}

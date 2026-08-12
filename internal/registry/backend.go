@@ -17,7 +17,7 @@ type Backend interface {
 
 	// Agent lifecycle
 	RegisterAgent(ctx context.Context, agent Agent, relayID string) error
-	HeartbeatAgent(ctx context.Context, agentID string) error
+	HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error
 	GetAgentPlacement(ctx context.Context, agentID string) (*AgentPlacement, error)
 	ListAgents(ctx context.Context) ([]Agent, error)
 	// TODO(registry-ttl): add indexed stale query + batch placement APIs:

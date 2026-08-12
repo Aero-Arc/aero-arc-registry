@@ -270,7 +270,7 @@ func (b *ttlCleanupBackend) RegisterAgent(ctx context.Context, agent Agent, rela
 	return nil
 }
 
-func (b *ttlCleanupBackend) HeartbeatAgent(ctx context.Context, agentID string) error {
+func (b *ttlCleanupBackend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	return nil
 }
 

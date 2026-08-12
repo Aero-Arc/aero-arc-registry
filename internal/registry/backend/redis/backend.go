@@ -201,10 +201,15 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 	return nil
 }
 
-func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string) error {
+func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	result, err := heartbeatAgentScript.Run(ctx, b.client,
-		[]string{b.agentKey(agentID), b.agentsKey()},
-		agentID, b.ttl.Agent.Milliseconds(),
+		[]string{
+			b.agentKey(agentID),
+			b.agentsKey(),
+			b.relayKey(expectedRelayID),
+			b.relayAgentsKey(expectedRelayID),
+		},
+		agentID, expectedRelayID, b.ttl.Agent.Milliseconds(),
 	).Int64()
 	if err != nil {
 		return fmt.Errorf("heartbeat agent %q: %w", agentID, err)
@@ -521,26 +526,24 @@ return 1
 
 var heartbeatAgentScript = redisclient.NewScript(redisNowMilliseconds + `
 if redis.call('EXISTS', KEYS[1]) == 0 then
-  redis.call('ZREM', KEYS[2], ARGV[1])
-  return 0
+	return 0
 end
+local relay_id = redis.call('HGET', KEYS[1], 'relay_id')
 local relay_key = redis.call('HGET', KEYS[1], 'relay_key')
 local relay_agents_key = redis.call('HGET', KEYS[1], 'relay_agents_key')
 local relay_incarnation = redis.call('HGET', KEYS[1], 'relay_incarnation')
-if not relay_key or not relay_incarnation or redis.call('HGET', relay_key, 'incarnation') ~= relay_incarnation then
-  redis.call('DEL', KEYS[1])
-  redis.call('ZREM', KEYS[2], ARGV[1])
-  if relay_agents_key then redis.call('ZREM', relay_agents_key, ARGV[1]) end
-  return 0
+if relay_id ~= ARGV[2] or relay_key ~= KEYS[3] or relay_agents_key ~= KEYS[4] or
+   not relay_incarnation or redis.call('HGET', KEYS[3], 'incarnation') ~= relay_incarnation then
+	return 0
 end
 redis.call('HSET', KEYS[1],
   'last_heartbeat_ms', now_ms,
   'placement_updated_ms', now_ms)
-redis.call('PEXPIRE', KEYS[1], ARGV[2])
-local expires_ms = tonumber(now_ms) + tonumber(ARGV[2])
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+local expires_ms = tonumber(now_ms) + tonumber(ARGV[3])
 redis.call('ZADD', KEYS[2], expires_ms, ARGV[1])
-redis.call('ZADD', relay_agents_key, expires_ms, ARGV[1])
-redis.call('PEXPIRE', relay_agents_key, redis.call('PTTL', relay_key))
+redis.call('ZADD', KEYS[4], expires_ms, ARGV[1])
+redis.call('PEXPIRE', KEYS[4], redis.call('PTTL', KEYS[3]))
 return 1
 `)
 

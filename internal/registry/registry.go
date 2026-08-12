@@ -82,10 +82,10 @@ func (r *Registry) RegisterAgent(ctx context.Context, agent Agent, relayID strin
 	return r.backend.RegisterAgent(ctx, agent, relayID)
 }
 
-func (r *Registry) HeartbeatAgent(ctx context.Context, agentID string) error {
+func (r *Registry) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	// TODO(registry-ttl): move heartbeat timestamp source of truth to registry
 	// write path (backend should persist registry-assigned time).
-	return r.backend.HeartbeatAgent(ctx, agentID)
+	return r.backend.HeartbeatAgent(ctx, agentID, expectedRelayID)
 }
 
 func (r *Registry) GetAgentPlacement(ctx context.Context, agentID string) (*AgentPlacement, error) {

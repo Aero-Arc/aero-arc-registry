@@ -7,7 +7,7 @@ This service is the gRPC-only control plane for current relay liveness and agent
 ## Invariants
 
 - Relay and agent liveness are TTL scoped; an agent on an expired relay is not live.
-- Registration is idempotent. Re-registering an agent may atomically move it to another live relay.
+- Registration is idempotent. Re-registering an agent may atomically move it to another live relay. Agent heartbeats must include the expected relay ID and only renew the current matching placement; heartbeats never move ownership.
 - Heartbeats update registry-owned timestamps. Unknown or expired entities return an error wrapping `registry.ErrNotFound`.
 - Backends implement `internal/registry.Backend` without exposing backend details in protobufs.
 - Redis is the production backend; memory is for development/tests. Consul and etcd are stubs.

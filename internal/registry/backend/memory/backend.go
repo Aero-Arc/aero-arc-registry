@@ -222,29 +222,34 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 	return nil
 }
 
-func (b *Backend) HeartbeatAgent(ctx context.Context, agentID string) error {
-	b.agentMu.RLock()
-	entry, exists := b.agents[agentID]
-	b.agentMu.RUnlock()
-	if !exists {
-		return errAgentNotRegistered
-	}
-
-	entry.mu.Lock()
-	entry.agent.LastHeartbeat = time.Now()
-	entry.mu.Unlock()
-
-	b.agentMu.Lock()
-	if placement, ok := b.placements[agentID]; ok {
-		placement.UpdatedAt = time.Now()
-	}
-	b.agentMu.Unlock()
-
+func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
+
+	// Hold relay and placement ownership through renewal so a concurrent
+	// RegisterAgent takeover cannot be overwritten or extended by the old relay.
+	b.relayMu.RLock()
+	defer b.relayMu.RUnlock()
+	b.agentMu.Lock()
+	defer b.agentMu.Unlock()
+
+	if _, exists := b.relays[expectedRelayID]; !exists {
+		return errRelayNotRegistered
+	}
+	entry, exists := b.agents[agentID]
+	placement, placed := b.placements[agentID]
+	if !exists || !placed || placement.RelayID != expectedRelayID {
+		return errAgentNotRegistered
+	}
+
+	now := time.Now()
+	entry.mu.Lock()
+	entry.agent.LastHeartbeat = now
+	entry.mu.Unlock()
+	placement.UpdatedAt = now
 
 	return nil
 }

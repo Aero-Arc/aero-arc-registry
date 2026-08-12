@@ -5,7 +5,7 @@ go 1.24.0
 toolchain go1.24.9
 
 require (
-	github.com/aero-arc/aero-arc-protos v0.0.0-20260125174309-0c449726339e
+	github.com/aero-arc/aero-arc-protos v0.0.0-20260812020348-1f8a6730b3ee
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/redis/go-redis/v9 v9.12.0
 	github.com/urfave/cli/v3 v3.6.2

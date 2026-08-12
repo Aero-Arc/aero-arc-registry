@@ -275,7 +275,7 @@ func TestAgentLifecycleAndAtomicReassignment(t *testing.T) {
 		t.Fatalf("GetAgentPlacement() error = %v", err)
 	}
 	time.Sleep(2 * time.Millisecond)
-	if err := backend.HeartbeatAgent(ctx, "agent-1"); err != nil {
+	if err := backend.HeartbeatAgent(ctx, "agent-1", "relay-2"); err != nil {
 		t.Fatalf("HeartbeatAgent() error = %v", err)
 	}
 	afterHeartbeat, err := backend.GetAgentPlacement(ctx, "agent-1")
@@ -293,6 +293,53 @@ func TestAgentLifecycleAndAtomicReassignment(t *testing.T) {
 		t.Fatalf("GetAgentPlacement(removed) error = %v, want ErrNotFound", err)
 	}
 	assertRelayAgentIDs(t, backend, "relay-2", nil)
+}
+
+func TestAgentHeartbeatRequiresCurrentRelayOwnership(t *testing.T) {
+	backend, server := newTestBackend(t, time.Minute, 5*time.Second)
+	ctx := context.Background()
+	registerRelay(t, backend, "relay-a")
+	registerRelay(t, backend, "relay-b")
+	registerAgent(t, backend, "agent-1", "relay-a")
+	registerAgent(t, backend, "agent-1", "relay-b")
+
+	placementAfterTakeover, err := backend.GetAgentPlacement(ctx, "agent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.FastForward(time.Second)
+	ttlBeforeRejected := server.TTL(backend.agentKey("agent-1"))
+	if err := backend.HeartbeatAgent(ctx, "agent-1", "relay-a"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("old relay heartbeat error = %v, want ErrNotFound", err)
+	}
+	if ttl := server.TTL(backend.agentKey("agent-1")); ttl != ttlBeforeRejected {
+		t.Fatalf("rejected heartbeat renewed agent TTL: before=%v after=%v", ttlBeforeRejected, ttl)
+	}
+	placementAfterRejected, err := backend.GetAgentPlacement(ctx, "agent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *placementAfterRejected != *placementAfterTakeover {
+		t.Fatalf("rejected heartbeat mutated placement: before=%+v after=%+v", placementAfterTakeover, placementAfterRejected)
+	}
+
+	if err := backend.HeartbeatAgent(ctx, "agent-1", "relay-b"); err != nil {
+		t.Fatalf("current relay heartbeat error = %v", err)
+	}
+	if ttl := server.TTL(backend.agentKey("agent-1")); ttl != 5*time.Second {
+		t.Fatalf("accepted heartbeat TTL = %v, want 5s", ttl)
+	}
+	placementAfterAccepted, err := backend.GetAgentPlacement(ctx, "agent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !placementAfterAccepted.UpdatedAt.After(placementAfterRejected.UpdatedAt) {
+		t.Fatalf("accepted heartbeat did not renew placement: before=%v after=%v", placementAfterRejected.UpdatedAt, placementAfterAccepted.UpdatedAt)
+	}
+
+	if err := backend.HeartbeatAgent(ctx, "agent-1", "relay-missing"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("missing relay heartbeat error = %v, want ErrNotFound", err)
+	}
 }
 
 func TestRelayReregistrationFencesPreviousAgentIncarnation(t *testing.T) {
@@ -349,11 +396,11 @@ func TestRelayReregistrationFencesPreviousAgentIncarnation(t *testing.T) {
 		}
 		registerRelay(t, backend, "relay-reused")
 
-		if err := backend.HeartbeatAgent(context.Background(), "agent-old"); !errors.Is(err, registry.ErrNotFound) {
+		if err := backend.HeartbeatAgent(context.Background(), "agent-old", "relay-reused"); !errors.Is(err, registry.ErrNotFound) {
 			t.Fatalf("HeartbeatAgent(old incarnation) error = %v, want ErrNotFound", err)
 		}
-		if exists := backend.client.Exists(context.Background(), backend.agentKey("agent-old")).Val(); exists != 0 {
-			t.Fatal("heartbeat did not repair old-incarnation agent hash")
+		if exists := backend.client.Exists(context.Background(), backend.agentKey("agent-old")).Val(); exists != 1 {
+			t.Fatal("rejected heartbeat deleted the existing agent instead of leaving ownership unchanged")
 		}
 	})
 
@@ -464,7 +511,7 @@ func TestNativeTTLExcludesExpiredEntitiesAndRepairsIndexes(t *testing.T) {
 	if _, err := backend.GetAgentPlacement(ctx, "agent-on-dead-relay"); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("GetAgentPlacement(dead relay) error = %v, want ErrNotFound", err)
 	}
-	if err := backend.HeartbeatAgent(ctx, "agent-on-dead-relay"); !errors.Is(err, registry.ErrNotFound) {
+	if err := backend.HeartbeatAgent(ctx, "agent-on-dead-relay", "relay-expiring"); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("HeartbeatAgent(dead relay) error = %v, want ErrNotFound", err)
 	}
 }

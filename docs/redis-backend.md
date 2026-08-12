@@ -9,6 +9,7 @@ Redis is the production registry backend. It stores only current control-plane s
 - A relay registration creates a monotonically increasing Redis-issued incarnation when no live hash exists. Idempotent retries and metadata updates preserve the active incarnation and agent membership. Re-creation after expiry or removal receives a new incarnation; agent registrations capture it, and reads and heartbeats reject surviving hashes from the prior relay instance.
 - An agent is live only while both its agent hash and assigned relay hash exist. A relay expiry therefore removes its agents from registry reads immediately, even before the periodic registry sweep runs.
 - Agent registration, reassignment, heartbeat, and removal update the entity, placement, and indexes atomically with Lua scripts.
+- Agent heartbeats are ownership-scoped: the caller supplies its relay ID, and Redis renews the agent only when that relay is live and still owns the current placement. A stale relay heartbeat cannot move or extend an agent taken over by another relay.
 - Sorted-set indexes carry the same expiry deadline as their entities. Reads prune expired members and ignore hashes that expired between the index and entity reads.
 - Listing is deterministic by ID. The backend provides current, eventually consistent state and does not provide historical events or global ordering.
 
