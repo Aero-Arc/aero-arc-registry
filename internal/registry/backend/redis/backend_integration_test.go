@@ -41,11 +41,14 @@ func TestRedisIntegration(t *testing.T) {
 			backend.relayKey("relay-integration"),
 			backend.relayKey("relay-takeover"),
 			backend.relayKey("relay-corrupt"),
+			backend.relayKey("relay-register-corrupt"),
 			backend.agentKey("agent-integration"),
 			backend.agentKey("agent-corrupt"),
+			backend.agentKey("agent-register-rejected"),
 			backend.relayAgentsKey("relay-integration"),
 			backend.relayAgentsKey("relay-takeover"),
 			backend.relayAgentsKey("relay-corrupt"),
+			backend.relayAgentsKey("relay-register-corrupt"),
 			backend.relayIncarnationKey(),
 			backend.relaysKey(),
 			backend.agentsKey(),
@@ -109,6 +112,34 @@ func TestRedisIntegration(t *testing.T) {
 	}
 	if err := backend.HeartbeatAgent(ctx, "agent-integration", "relay-takeover"); err != nil {
 		t.Fatalf("HeartbeatAgent(current owner) error = %v", err)
+	}
+
+	registerRelay(t, backend, "relay-register-corrupt")
+	if err := client.HDel(ctx, backend.relayKey("relay-register-corrupt"), "address").Err(); err != nil {
+		t.Fatalf("corrupt registration target: %v", err)
+	}
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-register-rejected"}, "relay-register-corrupt"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("RegisterAgent(corrupt target) error = %v, want ErrNotFound", err)
+	}
+	if exists := client.Exists(ctx, backend.agentKey("agent-register-rejected"), backend.relayKey("relay-register-corrupt"), backend.relayAgentsKey("relay-register-corrupt")).Val(); exists != 0 {
+		t.Fatalf("rejected registration/repair left %d entity keys", exists)
+	}
+	if err := client.ZScore(ctx, backend.agentsKey(), "agent-register-rejected").Err(); !errors.Is(err, redisclient.Nil) {
+		t.Fatalf("rejected registration wrote agent index: %v", err)
+	}
+	if err := client.ZScore(ctx, backend.relaysKey(), "relay-register-corrupt").Err(); !errors.Is(err, redisclient.Nil) {
+		t.Fatalf("corrupt registration target remained indexed: %v", err)
+	}
+	registerRelay(t, backend, "relay-register-corrupt")
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-register-rejected"}, "relay-register-corrupt"); err != nil {
+		t.Fatalf("RegisterAgent(repaired target) error = %v", err)
+	}
+	assertPlacement(t, backend, "agent-register-rejected", "relay-register-corrupt")
+	if err := backend.RemoveAgents(ctx, []string{"agent-register-rejected"}); err != nil {
+		t.Fatalf("RemoveAgents(registration scenario) error = %v", err)
+	}
+	if err := backend.RemoveRelay(ctx, "relay-register-corrupt"); err != nil {
+		t.Fatalf("RemoveRelay(registration scenario) error = %v", err)
 	}
 
 	if err := backend.HeartbeatRelay(ctx, "relay-integration"); err != nil {

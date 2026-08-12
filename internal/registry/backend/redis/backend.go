@@ -189,6 +189,7 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 			b.agentsKey(),
 			b.relayKey(relayID),
 			b.relayAgentsKey(relayID),
+			b.relaysKey(),
 		},
 		agent.ID, relayID, b.ttl.Agent.Milliseconds(),
 	).Int64()
@@ -428,6 +429,34 @@ local now = redis.call('TIME')
 local now_ms = now[1] .. string.format('%03d', math.floor(tonumber(now[2]) / 1000))
 `
 
+const redisEntityValidationLua = `
+local function valid_nonnegative_int64(value)
+  if not value or not string.match(value, '^%d+$') then return false end
+  if string.len(value) > 19 or
+     (string.len(value) == 19 and value > '9223372036854775807') then
+    return false
+  end
+  return true
+end
+
+local function live_index_member(index_key, member, current_time_ms)
+  local score = redis.call('ZSCORE', index_key, member)
+  return valid_nonnegative_int64(score) and
+    tonumber(score) > tonumber(current_time_ms)
+end
+
+local function valid_relay(values, expected_id, relays_index, current_time_ms)
+  local port = values[3] and tonumber(values[3])
+  return values[1] and values[1] == expected_id and
+    values[2] and values[2] ~= '' and
+    values[3] and string.match(values[3], '^%d+$') and
+    port and port >= 1 and port <= 65535 and
+    valid_nonnegative_int64(values[4]) and tonumber(values[4]) >= 1 and
+    valid_nonnegative_int64(values[5]) and
+    live_index_member(relays_index, expected_id, current_time_ms)
+end
+`
+
 var registerRelayScript = redisclient.NewScript(redisNowMilliseconds + `
 local expires_ms = tonumber(now_ms) + tonumber(ARGV[4])
 local incarnation = redis.call('HGET', KEYS[1], 'incarnation')
@@ -506,11 +535,16 @@ redis.call('DEL', KEYS[3])
 return 1
 `)
 
-var registerAgentScript = redisclient.NewScript(redisNowMilliseconds + `
-local relay_incarnation = redis.call('HGET', KEYS[3], 'incarnation')
-if not relay_incarnation then
+var registerAgentScript = redisclient.NewScript(redisNowMilliseconds + redisEntityValidationLua + `
+local relay = redis.call('HMGET', KEYS[3],
+  'id', 'address', 'grpc_port', 'incarnation', 'last_seen_ms')
+if not valid_relay(relay, ARGV[2], KEYS[5], now_ms) then
+  redis.call('DEL', KEYS[3])
+  redis.call('ZREM', KEYS[5], ARGV[2])
+  redis.call('DEL', KEYS[4])
   return 0
 end
+local relay_incarnation = relay[4]
 local expires_ms = tonumber(now_ms) + tonumber(ARGV[3])
 local old_relay_agents_key = redis.call('HGET', KEYS[1], 'relay_agents_key')
 if old_relay_agents_key and old_relay_agents_key ~= KEYS[4] then
@@ -554,24 +588,10 @@ redis.call('PEXPIRE', KEYS[4], redis.call('PTTL', KEYS[3]))
 return 1
 `)
 
-const agentReadValidationLua = `
+const agentReadValidationLua = redisEntityValidationLua + `
 local redis_time = redis.call('TIME')
 local redis_now_ms = tonumber(redis_time[1]) * 1000 +
   math.floor(tonumber(redis_time[2]) / 1000)
-
-local function valid_nonnegative_int64(value)
-  if not value or not string.match(value, '^%d+$') then return false end
-  if string.len(value) > 19 or
-     (string.len(value) == 19 and value > '9223372036854775807') then
-    return false
-  end
-  return true
-end
-
-local function live_index_member(index_key, member)
-  local score = redis.call('ZSCORE', index_key, member)
-  return score and tonumber(score) and tonumber(score) > redis_now_ms
-end
 
 local function remove_agent(agent_key, agents_index, expected_id, relay_agents_key)
   if relay_agents_key then redis.call('ZREM', relay_agents_key, expected_id) end
@@ -602,7 +622,7 @@ local function live_agent(agent_key, agents_index, relays_index, expected_id)
     remove_agent(agent_key, agents_index, expected_id, values[6])
     return nil
   end
-  if not live_index_member(agents_index, expected_id) then
+  if not live_index_member(agents_index, expected_id, redis_now_ms) then
     remove_agent(agent_key, agents_index, expected_id, values[6])
     return nil
   end
@@ -618,19 +638,13 @@ local function live_agent(agent_key, agents_index, relays_index, expected_id)
     remove_agent(agent_key, agents_index, expected_id, values[6])
     return nil
   end
-  local port = relay[3] and tonumber(relay[3])
-  local valid_relay = relay[2] and relay[2] ~= '' and
-    relay[3] and string.match(relay[3], '^%d+$') and
-    port and port >= 1 and port <= 65535 and
-    valid_nonnegative_int64(relay[4]) and tonumber(relay[4]) >= 1 and
-    valid_nonnegative_int64(relay[5]) and
-    live_index_member(relays_index, values[3])
-  if not valid_relay then
+  if not valid_relay(relay, values[3], relays_index, redis_now_ms) then
     remove_relay(values[4], relays_index, values[3])
     remove_agent(agent_key, agents_index, expected_id, values[6])
     return nil
   end
-  if relay[4] ~= values[5] or not live_index_member(values[6], expected_id) then
+  if relay[4] ~= values[5] or
+     not live_index_member(values[6], expected_id, redis_now_ms) then
     remove_agent(agent_key, agents_index, expected_id, values[6])
     return nil
   end

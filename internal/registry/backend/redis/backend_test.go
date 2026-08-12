@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -293,6 +295,162 @@ func TestAgentLifecycleAndAtomicReassignment(t *testing.T) {
 		t.Fatalf("GetAgentPlacement(removed) error = %v, want ErrNotFound", err)
 	}
 	assertRelayAgentIDs(t, backend, "relay-2", nil)
+}
+
+func TestRegisterAgentRequiresCompleteLiveRelay(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func(context.Context, *Backend, string) error
+	}{
+		{name: "missing relay", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.Del(ctx, backend.relayKey(relayID)).Err()
+		}},
+		{name: "missing address", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HDel(ctx, backend.relayKey(relayID), "address").Err()
+		}},
+		{name: "empty address", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "address", "").Err()
+		}},
+		{name: "missing port", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HDel(ctx, backend.relayKey(relayID), "grpc_port").Err()
+		}},
+		{name: "nondigit port", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "grpc_port", "50051x").Err()
+		}},
+		{name: "out of range port", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "grpc_port", "65536").Err()
+		}},
+		{name: "missing id", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HDel(ctx, backend.relayKey(relayID), "id").Err()
+		}},
+		{name: "wrong id", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "id", "other-relay").Err()
+		}},
+		{name: "missing timestamp", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HDel(ctx, backend.relayKey(relayID), "last_seen_ms").Err()
+		}},
+		{name: "invalid timestamp", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "last_seen_ms", "not-a-time").Err()
+		}},
+		{name: "overflow timestamp", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "last_seen_ms", "9223372036854775808").Err()
+		}},
+		{name: "missing incarnation", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HDel(ctx, backend.relayKey(relayID), "incarnation").Err()
+		}},
+		{name: "invalid incarnation", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "incarnation", "not-an-incarnation").Err()
+		}},
+		{name: "zero incarnation", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "incarnation", "0").Err()
+		}},
+		{name: "overflow incarnation", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "incarnation", "9223372036854775808").Err()
+		}},
+		{name: "absent relay index", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.ZRem(ctx, backend.relaysKey(), relayID).Err()
+		}},
+		{name: "expired relay index", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.ZAdd(ctx, backend.relaysKey(), redisclient.Z{Score: 0, Member: relayID}).Err()
+		}},
+		{name: "invalid relay index", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.ZAdd(ctx, backend.relaysKey(), redisclient.Z{Score: math.Inf(1), Member: relayID}).Err()
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend, _ := newTestBackend(t, time.Minute, time.Minute)
+			ctx := context.Background()
+			registerRelay(t, backend, "relay-current")
+			registerRelay(t, backend, "relay-target")
+			registerAgent(t, backend, "agent-1", "relay-current")
+			registerAgent(t, backend, "agent-on-target", "relay-target")
+			beforeAgent := backend.client.HGetAll(ctx, backend.agentKey("agent-1")).Val()
+			beforeGlobalScore := backend.client.ZScore(ctx, backend.agentsKey(), "agent-1").Val()
+			beforeCurrentScore := backend.client.ZScore(ctx, backend.relayAgentsKey("relay-current"), "agent-1").Val()
+			if err := tt.corrupt(ctx, backend, "relay-target"); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-1"}, "relay-target"); !errors.Is(err, registry.ErrNotFound) {
+				t.Fatalf("RegisterAgent(corrupt relay) error = %v, want ErrNotFound", err)
+			}
+			assertPlacement(t, backend, "agent-1", "relay-current")
+			assertRelayAgentIDs(t, backend, "relay-current", []string{"agent-1"})
+			if afterAgent := backend.client.HGetAll(ctx, backend.agentKey("agent-1")).Val(); !reflect.DeepEqual(afterAgent, beforeAgent) {
+				t.Fatalf("rejected registration mutated agent: before=%v after=%v", beforeAgent, afterAgent)
+			}
+			if score := backend.client.ZScore(ctx, backend.agentsKey(), "agent-1").Val(); score != beforeGlobalScore {
+				t.Fatalf("rejected registration mutated global score: before=%v after=%v", beforeGlobalScore, score)
+			}
+			if score := backend.client.ZScore(ctx, backend.relayAgentsKey("relay-current"), "agent-1").Val(); score != beforeCurrentScore {
+				t.Fatalf("rejected registration mutated current relay score: before=%v after=%v", beforeCurrentScore, score)
+			}
+			if exists := backend.client.Exists(ctx, backend.relayKey("relay-target"), backend.relayAgentsKey("relay-target")).Val(); exists != 0 {
+				t.Fatalf("relay repair left %d target keys", exists)
+			}
+			if err := backend.client.ZScore(ctx, backend.relaysKey(), "relay-target").Err(); !errors.Is(err, redisclient.Nil) {
+				t.Fatalf("relay index still contains target: %v", err)
+			}
+		})
+	}
+
+	t.Run("valid relay", func(t *testing.T) {
+		backend, _ := newTestBackend(t, time.Minute, time.Minute)
+		registerRelay(t, backend, "relay-valid")
+		registerAgent(t, backend, "agent-valid", "relay-valid")
+		assertPlacement(t, backend, "agent-valid", "relay-valid")
+		assertRelayAgentIDs(t, backend, "relay-valid", []string{"agent-valid"})
+	})
+}
+
+func TestRegisterAgentConcurrentRelayRefreshIsAtomic(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+
+	for i := 0; i < 64; i++ {
+		relayID := fmt.Sprintf("relay-refresh-%d", i)
+		agentID := fmt.Sprintf("agent-refresh-%d", i)
+		registerRelay(t, backend, relayID)
+		if err := backend.client.HDel(ctx, backend.relayKey(relayID), "address").Err(); err != nil {
+			t.Fatal(err)
+		}
+
+		start := make(chan struct{})
+		refreshErr := make(chan error, 1)
+		agentErr := make(chan error, 1)
+		go func() {
+			<-start
+			refreshErr <- backend.RegisterRelay(ctx, registry.Relay{
+				ID: relayID, Address: "127.0.0.1", GRPCPort: 50051,
+			})
+		}()
+		go func() {
+			<-start
+			agentErr <- backend.RegisterAgent(ctx, registry.Agent{ID: agentID}, relayID)
+		}()
+		close(start)
+		if err := <-refreshErr; err != nil {
+			t.Fatalf("concurrent RegisterRelay() error = %v", err)
+		}
+		err := <-agentErr
+		if err != nil && !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("concurrent RegisterAgent() error = %v", err)
+		}
+		if errors.Is(err, registry.ErrNotFound) {
+			if exists := backend.client.Exists(ctx, backend.agentKey(agentID)).Val(); exists != 0 {
+				t.Fatal("rejected registration partially wrote agent hash")
+			}
+			if scoreErr := backend.client.ZScore(ctx, backend.agentsKey(), agentID).Err(); !errors.Is(scoreErr, redisclient.Nil) {
+				t.Fatalf("rejected registration partially wrote global index: %v", scoreErr)
+			}
+		}
+		if err := backend.RegisterAgent(ctx, registry.Agent{ID: agentID}, relayID); err != nil {
+			t.Fatalf("RegisterAgent() after relay refresh error = %v", err)
+		}
+		assertPlacement(t, backend, agentID, relayID)
+	}
 }
 
 func TestAgentHeartbeatRequiresCurrentRelayOwnership(t *testing.T) {
