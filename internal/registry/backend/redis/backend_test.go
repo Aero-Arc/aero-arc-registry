@@ -429,7 +429,7 @@ func TestListAgentsOmitsAndRepairsCorruptRecords(t *testing.T) {
 	backend, _ := newTestBackend(t, time.Minute, time.Minute)
 	ctx := context.Background()
 	registerRelay(t, backend, "relay-1")
-	for _, agentID := range []string{"agent-valid", "agent-missing-field", "agent-invalid-time", "agent-wrong-id"} {
+	for _, agentID := range []string{"agent-valid", "agent-missing-field", "agent-invalid-time", "agent-overflow-time", "agent-wrong-id"} {
 		registerAgent(t, backend, agentID, "relay-1")
 	}
 
@@ -437,6 +437,9 @@ func TestListAgentsOmitsAndRepairsCorruptRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := backend.client.HSet(ctx, backend.agentKey("agent-invalid-time"), "last_heartbeat_ms", "not-a-time").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.client.HSet(ctx, backend.agentKey("agent-overflow-time"), "last_heartbeat_ms", "9223372036854775808").Err(); err != nil {
 		t.Fatal(err)
 	}
 	if err := backend.client.HSet(ctx, backend.agentKey("agent-wrong-id"), "id", "another-agent").Err(); err != nil {
@@ -450,7 +453,7 @@ func TestListAgentsOmitsAndRepairsCorruptRecords(t *testing.T) {
 	if len(agents) != 1 || agents[0].ID != "agent-valid" {
 		t.Fatalf("ListAgents() = %+v, want only valid record", agents)
 	}
-	for _, agentID := range []string{"agent-missing-field", "agent-invalid-time", "agent-wrong-id"} {
+	for _, agentID := range []string{"agent-missing-field", "agent-invalid-time", "agent-overflow-time", "agent-wrong-id"} {
 		if exists := backend.client.Exists(ctx, backend.agentKey(agentID)).Val(); exists != 0 {
 			t.Fatalf("corrupt agent hash %q was not removed", agentID)
 		}
@@ -460,6 +463,259 @@ func TestListAgentsOmitsAndRepairsCorruptRecords(t *testing.T) {
 		if err := backend.client.ZScore(ctx, backend.relayAgentsKey("relay-1"), agentID).Err(); !errors.Is(err, redisclient.Nil) {
 			t.Fatalf("relay index still contains %q: %v", agentID, err)
 		}
+	}
+}
+
+func TestAgentReadsRequireFullyValidRelay(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func(context.Context, *Backend, string) error
+	}{
+		{name: "missing address", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HDel(ctx, backend.relayKey(relayID), "address").Err()
+		}},
+		{name: "invalid port", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "grpc_port", "65536").Err()
+		}},
+		{name: "overflow timestamp", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.HSet(ctx, backend.relayKey(relayID), "last_seen_ms", "9223372036854775808").Err()
+		}},
+		{name: "missing global index", corrupt: func(ctx context.Context, backend *Backend, relayID string) error {
+			return backend.client.ZRem(ctx, backend.relaysKey(), relayID).Err()
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend, _ := newTestBackend(t, time.Minute, time.Minute)
+			ctx := context.Background()
+			registerRelay(t, backend, "relay-healthy")
+			registerAgent(t, backend, "agent-healthy", "relay-healthy")
+			registerRelay(t, backend, "relay-corrupt")
+			registerAgent(t, backend, "agent-corrupt", "relay-corrupt")
+			if err := tt.corrupt(ctx, backend, "relay-corrupt"); err != nil {
+				t.Fatal(err)
+			}
+
+			agents, err := backend.ListAgents(ctx)
+			if err != nil {
+				t.Fatalf("ListAgents() error = %v", err)
+			}
+			if len(agents) != 1 || agents[0].ID != "agent-healthy" {
+				t.Fatalf("ListAgents() = %+v, want healthy neighbor only", agents)
+			}
+			if _, err := backend.GetAgentPlacement(ctx, "agent-corrupt"); !errors.Is(err, registry.ErrNotFound) {
+				t.Fatalf("GetAgentPlacement(corrupt relay) error = %v, want ErrNotFound", err)
+			}
+			assertPlacement(t, backend, "agent-healthy", "relay-healthy")
+			if exists := backend.client.Exists(ctx, backend.relayKey("relay-corrupt"), backend.agentKey("agent-corrupt")).Val(); exists != 0 {
+				t.Fatalf("repair left %d corrupt entity keys", exists)
+			}
+		})
+	}
+}
+
+func TestPlacementAndRelayAgentListRejectMalformedRelay(t *testing.T) {
+	for _, read := range []struct {
+		name string
+		run  func(context.Context, *Backend) error
+	}{
+		{name: "placement", run: func(ctx context.Context, backend *Backend) error {
+			_, err := backend.GetAgentPlacement(ctx, "agent-corrupt")
+			return err
+		}},
+		{name: "relay agents", run: func(ctx context.Context, backend *Backend) error {
+			_, err := backend.ListRelayAgents(ctx, "relay-corrupt")
+			return err
+		}},
+	} {
+		t.Run(read.name, func(t *testing.T) {
+			backend, _ := newTestBackend(t, time.Minute, time.Minute)
+			ctx := context.Background()
+			registerRelay(t, backend, "relay-corrupt")
+			registerAgent(t, backend, "agent-corrupt", "relay-corrupt")
+			if err := backend.client.HSet(ctx, backend.relayKey("relay-corrupt"), "grpc_port", "not-a-port").Err(); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := read.run(ctx, backend); !errors.Is(err, registry.ErrNotFound) {
+				t.Fatalf("read with malformed relay error = %v, want ErrNotFound", err)
+			}
+			if exists := backend.client.Exists(ctx, backend.relayKey("relay-corrupt")).Val(); exists != 0 {
+				t.Fatal("malformed relay hash was not repaired")
+			}
+		})
+	}
+}
+
+func TestListRelayAgentsRejectsOverflowTimestampAndPreservesHealthyAgent(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	registerRelay(t, backend, "relay-1")
+	registerAgent(t, backend, "agent-healthy", "relay-1")
+	registerAgent(t, backend, "agent-overflow", "relay-1")
+	if err := backend.client.HSet(ctx, backend.agentKey("agent-overflow"), "last_heartbeat_ms", "9223372036854775808").Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	assertRelayAgentIDs(t, backend, "relay-1", []string{"agent-healthy"})
+	if exists := backend.client.Exists(ctx, backend.agentKey("agent-overflow")).Val(); exists != 0 {
+		t.Fatal("ListRelayAgents did not repair overflow timestamp")
+	}
+}
+
+func TestGetAgentPlacementValidatesAndRepairsEntireRecord(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func(context.Context, *Backend) error
+	}{
+		{name: "stored id", corrupt: func(ctx context.Context, backend *Backend) error {
+			return backend.client.HSet(ctx, backend.agentKey("agent-corrupt"), "id", "other-agent").Err()
+		}},
+		{name: "last heartbeat", corrupt: func(ctx context.Context, backend *Backend) error {
+			return backend.client.HSet(ctx, backend.agentKey("agent-corrupt"), "last_heartbeat_ms", "9223372036854775808").Err()
+		}},
+		{name: "relay id", corrupt: func(ctx context.Context, backend *Backend) error {
+			return backend.client.HSet(ctx, backend.agentKey("agent-corrupt"), "relay_id", "relay-other").Err()
+		}},
+		{name: "relay key", corrupt: func(ctx context.Context, backend *Backend) error {
+			return backend.client.HSet(ctx, backend.agentKey("agent-corrupt"), "relay_key", backend.relayKey("relay-other")).Err()
+		}},
+		{name: "relay incarnation", corrupt: func(ctx context.Context, backend *Backend) error {
+			return backend.client.HSet(ctx, backend.agentKey("agent-corrupt"), "relay_incarnation", "9223372036854775808").Err()
+		}},
+		{name: "relay membership key", corrupt: func(ctx context.Context, backend *Backend) error {
+			return backend.client.HSet(ctx, backend.agentKey("agent-corrupt"), "relay_agents_key", backend.relayAgentsKey("relay-other")).Err()
+		}},
+		{name: "placement timestamp", corrupt: func(ctx context.Context, backend *Backend) error {
+			return backend.client.HSet(ctx, backend.agentKey("agent-corrupt"), "placement_updated_ms", "not-a-time").Err()
+		}},
+		{name: "global index", corrupt: func(ctx context.Context, backend *Backend) error {
+			return backend.client.ZRem(ctx, backend.agentsKey(), "agent-corrupt").Err()
+		}},
+		{name: "relay index", corrupt: func(ctx context.Context, backend *Backend) error {
+			return backend.client.ZRem(ctx, backend.relayAgentsKey("relay-1"), "agent-corrupt").Err()
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend, _ := newTestBackend(t, time.Minute, time.Minute)
+			ctx := context.Background()
+			registerRelay(t, backend, "relay-1")
+			registerRelay(t, backend, "relay-other")
+			registerAgent(t, backend, "agent-healthy", "relay-1")
+			registerAgent(t, backend, "agent-corrupt", "relay-1")
+			if err := tt.corrupt(ctx, backend); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := backend.GetAgentPlacement(ctx, "agent-corrupt"); !errors.Is(err, registry.ErrNotFound) {
+				t.Fatalf("GetAgentPlacement(corrupt) error = %v, want ErrNotFound", err)
+			}
+			if exists := backend.client.Exists(ctx, backend.agentKey("agent-corrupt")).Val(); exists != 0 {
+				t.Fatal("corrupt agent hash was not removed")
+			}
+			if err := backend.client.ZScore(ctx, backend.agentsKey(), "agent-corrupt").Err(); !errors.Is(err, redisclient.Nil) {
+				t.Fatalf("global index still contains corrupt agent: %v", err)
+			}
+			assertPlacement(t, backend, "agent-healthy", "relay-1")
+		})
+	}
+}
+
+func TestAgentPlacementRepairDoesNotDeleteConcurrentRegistration(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	registerRelay(t, backend, "relay-1")
+
+	for i := 0; i < 64; i++ {
+		agentID := fmt.Sprintf("agent-race-%d", i)
+		registerAgent(t, backend, agentID, "relay-1")
+		if err := backend.client.HDel(ctx, backend.agentKey(agentID), "placement_updated_ms").Err(); err != nil {
+			t.Fatal(err)
+		}
+
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() {
+			<-start
+			_, err := backend.GetAgentPlacement(ctx, agentID)
+			if errors.Is(err, registry.ErrNotFound) {
+				err = nil
+			}
+			errs <- err
+		}()
+		go func() {
+			<-start
+			errs <- backend.RegisterAgent(ctx, registry.Agent{ID: agentID}, "relay-1")
+		}()
+		close(start)
+		for range 2 {
+			if err := <-errs; err != nil {
+				t.Fatalf("concurrent placement repair/register: %v", err)
+			}
+		}
+		assertPlacement(t, backend, agentID, "relay-1")
+	}
+}
+
+func TestStaleRelayListCannotDeleteReassignedAgent(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	registerRelay(t, backend, "relay-a")
+	registerRelay(t, backend, "relay-b")
+	registerAgent(t, backend, "agent-1", "relay-a")
+	staleIncarnation := relayIncarnation(t, backend, "relay-a")
+
+	registerAgent(t, backend, "agent-1", "relay-b")
+	if err := backend.client.ZAdd(ctx, backend.relayAgentsKey("relay-a"), redisclient.Z{
+		Score: float64(time.Now().Add(time.Minute).UnixMilli()), Member: "agent-1",
+	}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	values, err := readRelayAgentScript.Run(ctx, backend.client, []string{
+		backend.agentKey("agent-1"), backend.agentsKey(), backend.relayAgentsKey("relay-a"),
+		backend.relayKey("relay-a"), backend.relaysKey(),
+	}, "agent-1", "relay-a", staleIncarnation).StringSlice()
+	if err != nil && !errors.Is(err, redisclient.Nil) {
+		t.Fatalf("stale relay read error = %v", err)
+	}
+	if len(values) != 0 {
+		t.Fatalf("stale relay read returned %+v", values)
+	}
+	assertPlacement(t, backend, "agent-1", "relay-b")
+	assertRelayAgentIDs(t, backend, "relay-a", nil)
+	assertRelayAgentIDs(t, backend, "relay-b", []string{"agent-1"})
+}
+
+func TestConcurrentStaleRelayListsPreserveReassignment(t *testing.T) {
+	backend, _ := newTestBackend(t, time.Minute, time.Minute)
+	ctx := context.Background()
+	registerRelay(t, backend, "relay-a")
+	registerRelay(t, backend, "relay-b")
+
+	for i := 0; i < 128; i++ {
+		agentID := fmt.Sprintf("agent-reassign-%d", i)
+		registerAgent(t, backend, agentID, "relay-a")
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() {
+			<-start
+			_, err := backend.ListRelayAgents(ctx, "relay-a")
+			errs <- err
+		}()
+		go func() {
+			<-start
+			errs <- backend.RegisterAgent(ctx, registry.Agent{ID: agentID}, "relay-b")
+		}()
+		close(start)
+		for range 2 {
+			if err := <-errs; err != nil {
+				t.Fatalf("concurrent list/reassignment: %v", err)
+			}
+		}
+		assertPlacement(t, backend, agentID, "relay-b")
 	}
 }
 

@@ -125,15 +125,33 @@ func TestRedisIntegration(t *testing.T) {
 	if err := client.HDel(ctx, backend.relayKey("relay-corrupt"), "address").Err(); err != nil {
 		t.Fatalf("corrupt relay address: %v", err)
 	}
+	agents, err = backend.ListAgents(ctx)
+	if err != nil || len(agents) != 1 || agents[0].ID != "agent-integration" {
+		t.Fatalf("ListAgents() with corrupt relay = %+v, want healthy agent only, error = %v", agents, err)
+	}
 	relays, err = backend.ListRelays(ctx)
-	if err != nil || len(relays) != 1 || relays[0].ID != "relay-integration" {
-		t.Fatalf("ListRelays() with corrupt neighbor = %+v, error = %v", relays, err)
+	if err != nil || len(relays) != 2 || relays[0].ID != "relay-integration" || relays[1].ID != "relay-takeover" {
+		t.Fatalf("ListRelays() with corrupt neighbor = %+v, want two healthy relays, error = %v", relays, err)
 	}
 	if exists := client.Exists(ctx, backend.relayKey("relay-corrupt"), backend.relayAgentsKey("relay-corrupt")).Val(); exists != 0 {
 		t.Fatalf("corrupt relay repair left %d keys", exists)
 	}
 	if err := client.ZScore(ctx, backend.relaysKey(), "relay-corrupt").Err(); !errors.Is(err, redisclient.Nil) {
 		t.Fatalf("relay index still contains corrupt relay: %v", err)
+	}
+	if exists := client.Exists(ctx, backend.agentKey("agent-corrupt")).Val(); exists != 0 {
+		t.Fatal("agent read did not repair entity on corrupt relay")
+	}
+
+	registerRelay(t, backend, "relay-corrupt")
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-corrupt"}, "relay-corrupt"); err != nil {
+		t.Fatalf("RegisterAgent(corrupt placement) error = %v", err)
+	}
+	if err := client.HSet(ctx, backend.agentKey("agent-corrupt"), "placement_updated_ms", "9223372036854775808").Err(); err != nil {
+		t.Fatalf("corrupt placement timestamp: %v", err)
+	}
+	if _, err := backend.GetAgentPlacement(ctx, "agent-corrupt"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetAgentPlacement(corrupt timestamp) error = %v, want ErrNotFound", err)
 	}
 
 	if err := backend.RemoveAgents(ctx, []string{"agent-integration", "agent-corrupt"}); err != nil {

@@ -9,6 +9,7 @@ Redis is the production registry backend. It stores only current control-plane s
 - A relay registration creates a monotonically increasing Redis-issued incarnation when no live hash exists. Idempotent retries and metadata updates preserve the active incarnation and agent membership. Re-creation after expiry or removal receives a new incarnation; agent registrations capture it, and reads and heartbeats reject surviving hashes from the prior relay instance.
 - An agent is live only while both its agent hash and assigned relay hash exist. A relay expiry therefore removes its agents from registry reads immediately, even before the periodic registry sweep runs.
 - Agent registration, reassignment, heartbeat, and removal update the entity, placement, and indexes atomically with Lua scripts.
+- Relay-scoped reads repair only the membership belonging to the relay being listed when they encounter an agent that has moved. They never follow the agent's new placement to delete current state, so a stale relay-list snapshot cannot erase a concurrent reassignment.
 - Agent heartbeats are ownership-scoped: the caller supplies its relay ID, and Redis renews the agent only when that relay is live and still owns the current placement. A stale relay heartbeat cannot move or extend an agent taken over by another relay.
 - Sorted-set indexes carry the same expiry deadline as their entities. Reads prune expired members and ignore hashes that expired between the index and entity reads.
 - Listing is deterministic by ID. The backend provides current, eventually consistent state and does not provide historical events or global ordering.
@@ -32,7 +33,17 @@ The namespace contains a Redis hash tag so related keys share a slot. The curren
 
 ## Failure behavior
 
-Redis and context errors are returned to the gRPC layer. Missing or expired entities map to `registry.ErrNotFound`. Relay and agent lists atomically omit and repair incomplete, invalid, or old-incarnation records instead of failing the entire list. Relay repair removes the corrupt hash, global index entry, and relay-membership index in one Lua operation; agent repair similarly removes its hash and index memberships.
+Redis and context errors are returned to the gRPC layer. Missing or expired entities map to `registry.ErrNotFound`. Relay, agent, placement, and relay-membership reads validate the complete current entity and ownership relationship in one Lua operation. Incomplete, invalid, unindexed, or old-incarnation records are omitted and repaired instead of failing healthy neighbors. Relay repair removes the corrupt hash, global index entry, and relay-membership index; agent repair removes its hash and index memberships. Repairs and registrations are serialized by Redis, so a repair based on stale state cannot delete a fresh valid write.
+
+## Ownership heartbeat rollout
+
+Deploy the relay-owned heartbeat contract in this order:
+
+1. Merge and publish the protobuf release that adds `relay_id` to `HeartbeatAgentRequest`.
+2. Deploy Relay with that protobuf version so every agent heartbeat supplies its relay ID. The older Registry safely ignores the new field.
+3. Deploy the strict Registry version, which requires `relay_id` and rejects a heartbeat unless it matches the current live placement.
+
+After step 3, do not roll Relay back independently: an older Relay omits `relay_id`, so the strict Registry rejects its agent heartbeats until Relay is restored or Registry is rolled back as well. Rollbacks must therefore restore Relay first, or roll Relay and Registry back together.
 
 ## Tests
 

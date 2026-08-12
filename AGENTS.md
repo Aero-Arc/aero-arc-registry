@@ -13,6 +13,7 @@ This service is the gRPC-only control plane for current relay liveness and agent
 - Redis is the production backend; memory is for development/tests. Consul and etcd are stubs.
 - Redis mutations that span entity and index keys must remain atomic. Preserve the versioned key namespace and expiry-scored indexes documented in `docs/redis-backend.md`.
 - Lists must omit expired/partially deleted records and return deterministic ID order.
+- Relay-owned agent heartbeat rollout is ordered: publish Protos, deploy Relay while the old Registry ignores the new `relay_id`, then deploy the strict Registry. Once strict Registry is live, rolling Relay back alone causes agent heartbeats to be rejected; restore Relay or roll Registry back with it.
 
 ## Development
 

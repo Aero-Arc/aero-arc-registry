@@ -222,7 +222,7 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID s
 
 func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*registry.AgentPlacement, error) {
 	values, err := liveAgentScript.Run(ctx, b.client,
-		[]string{b.agentKey(agentID), b.agentsKey()}, agentID,
+		[]string{b.agentKey(agentID), b.agentsKey(), b.relaysKey()}, agentID,
 	).StringSlice()
 	if errors.Is(err, redisclient.Nil) || (err == nil && len(values) == 0) {
 		return nil, errAgentNotRegistered
@@ -258,7 +258,7 @@ func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 	commands := make([]*redisclient.Cmd, len(ids))
 	for i, id := range ids {
 		commands[i] = readLiveAgentScript.Eval(ctx, pipe,
-			[]string{b.agentKey(id), b.agentsKey()}, id,
+			[]string{b.agentKey(id), b.agentsKey(), b.relaysKey()}, id,
 		)
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redisclient.Nil) {
@@ -289,12 +289,19 @@ func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 }
 
 func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*registry.Agent, error) {
-	relayIncarnation, err := b.client.HGet(ctx, b.relayKey(relayID), "incarnation").Result()
-	if err != nil && !errors.Is(err, redisclient.Nil) {
-		return nil, fmt.Errorf("check relay %q: %w", relayID, err)
-	} else if errors.Is(err, redisclient.Nil) || relayIncarnation == "" {
+	relayValues, err := readLiveRelayScript.Run(ctx, b.client,
+		[]string{b.relayKey(relayID), b.relaysKey(), b.relayAgentsKey(relayID)}, relayID,
+	).StringSlice()
+	if errors.Is(err, redisclient.Nil) || (err == nil && len(relayValues) == 0) {
 		return nil, errRelayNotRegistered
 	}
+	if err != nil {
+		return nil, fmt.Errorf("check relay %q: %w", relayID, err)
+	}
+	if len(relayValues) != 5 {
+		return nil, fmt.Errorf("check relay %q: corrupt redis response", relayID)
+	}
+	relayIncarnation := relayValues[3]
 
 	ids, err := b.activeIndexIDs(ctx, b.relayAgentsKey(relayID))
 	if err != nil {
@@ -305,7 +312,7 @@ func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*regis
 	commands := make([]*redisclient.Cmd, len(ids))
 	for i, id := range ids {
 		commands[i] = readRelayAgentScript.Eval(ctx, pipe,
-			[]string{b.agentKey(id), b.agentsKey(), b.relayAgentsKey(relayID), b.relayKey(relayID)},
+			[]string{b.agentKey(id), b.agentsKey(), b.relayAgentsKey(relayID), b.relayKey(relayID), b.relaysKey()},
 			id, relayID, relayIncarnation,
 		)
 	}
@@ -547,78 +554,111 @@ redis.call('PEXPIRE', KEYS[4], redis.call('PTTL', KEYS[3]))
 return 1
 `)
 
-var liveAgentScript = redisclient.NewScript(`
-if redis.call('EXISTS', KEYS[1]) == 0 then
-  redis.call('ZREM', KEYS[2], ARGV[1])
-  return nil
+const agentReadValidationLua = `
+local redis_time = redis.call('TIME')
+local redis_now_ms = tonumber(redis_time[1]) * 1000 +
+  math.floor(tonumber(redis_time[2]) / 1000)
+
+local function valid_nonnegative_int64(value)
+  if not value or not string.match(value, '^%d+$') then return false end
+  if string.len(value) > 19 or
+     (string.len(value) == 19 and value > '9223372036854775807') then
+    return false
+  end
+  return true
 end
-local relay_key = redis.call('HGET', KEYS[1], 'relay_key')
-local relay_agents_key = redis.call('HGET', KEYS[1], 'relay_agents_key')
-local relay_incarnation = redis.call('HGET', KEYS[1], 'relay_incarnation')
-if not relay_key or not relay_incarnation or redis.call('HGET', relay_key, 'incarnation') ~= relay_incarnation then
-  redis.call('DEL', KEYS[1])
-  redis.call('ZREM', KEYS[2], ARGV[1])
-  if relay_agents_key then redis.call('ZREM', relay_agents_key, ARGV[1]) end
-  return nil
+
+local function live_index_member(index_key, member)
+  local score = redis.call('ZSCORE', index_key, member)
+  return score and tonumber(score) and tonumber(score) > redis_now_ms
 end
-return redis.call('HMGET', KEYS[1], 'id', 'relay_id', 'placement_updated_ms')
+
+local function remove_agent(agent_key, agents_index, expected_id, relay_agents_key)
+  if relay_agents_key then redis.call('ZREM', relay_agents_key, expected_id) end
+  redis.call('DEL', agent_key)
+  redis.call('ZREM', agents_index, expected_id)
+end
+
+local function remove_relay(relay_key, relays_index, expected_id)
+  redis.call('DEL', relay_key)
+  redis.call('ZREM', relays_index, expected_id)
+end
+
+local function live_agent(agent_key, agents_index, relays_index, expected_id)
+  if redis.call('EXISTS', agent_key) == 0 then
+    redis.call('ZREM', agents_index, expected_id)
+    return nil
+  end
+  local values = redis.call('HMGET', agent_key,
+    'id', 'last_heartbeat_ms', 'relay_id', 'relay_key',
+    'relay_incarnation', 'relay_agents_key', 'placement_updated_ms')
+  if not values[1] or values[1] ~= expected_id or
+     not valid_nonnegative_int64(values[2]) or
+     not values[3] or values[3] == '' or
+     not values[4] or values[4] == '' or
+     not valid_nonnegative_int64(values[5]) or tonumber(values[5]) < 1 or
+     not values[6] or values[6] == '' or
+     not valid_nonnegative_int64(values[7]) then
+    remove_agent(agent_key, agents_index, expected_id, values[6])
+    return nil
+  end
+  if not live_index_member(agents_index, expected_id) then
+    remove_agent(agent_key, agents_index, expected_id, values[6])
+    return nil
+  end
+
+  local relay = redis.call('HMGET', values[4],
+    'id', 'address', 'grpc_port', 'incarnation', 'last_seen_ms')
+  if not relay[1] then
+    remove_agent(agent_key, agents_index, expected_id, values[6])
+    return nil
+  end
+  -- A bad agent relay pointer must not be allowed to delete an unrelated relay.
+  if relay[1] ~= values[3] then
+    remove_agent(agent_key, agents_index, expected_id, values[6])
+    return nil
+  end
+  local port = relay[3] and tonumber(relay[3])
+  local valid_relay = relay[2] and relay[2] ~= '' and
+    relay[3] and string.match(relay[3], '^%d+$') and
+    port and port >= 1 and port <= 65535 and
+    valid_nonnegative_int64(relay[4]) and tonumber(relay[4]) >= 1 and
+    valid_nonnegative_int64(relay[5]) and
+    live_index_member(relays_index, values[3])
+  if not valid_relay then
+    remove_relay(values[4], relays_index, values[3])
+    remove_agent(agent_key, agents_index, expected_id, values[6])
+    return nil
+  end
+  if relay[4] ~= values[5] or not live_index_member(values[6], expected_id) then
+    remove_agent(agent_key, agents_index, expected_id, values[6])
+    return nil
+  end
+  return values
+end
+`
+
+var liveAgentScript = redisclient.NewScript(agentReadValidationLua + `
+local values = live_agent(KEYS[1], KEYS[2], KEYS[3], ARGV[1])
+if not values then return nil end
+return {values[1], values[3], values[7]}
 `)
 
-var readLiveAgentScript = redisclient.NewScript(`
-local function remove_agent()
-  local relay_agents_key = redis.call('HGET', KEYS[1], 'relay_agents_key')
-  if relay_agents_key then redis.call('ZREM', relay_agents_key, ARGV[1]) end
-  redis.call('DEL', KEYS[1])
-  redis.call('ZREM', KEYS[2], ARGV[1])
-end
-if redis.call('EXISTS', KEYS[1]) == 0 then
-  redis.call('ZREM', KEYS[2], ARGV[1])
-  return nil
-end
-local values = redis.call('HMGET', KEYS[1],
-  'id', 'last_heartbeat_ms', 'relay_id', 'relay_key',
-  'relay_incarnation', 'relay_agents_key', 'placement_updated_ms')
-if not values[1] or values[1] ~= ARGV[1] or
-   not values[2] or not string.match(values[2], '^%d+$') or
-   not values[3] or not values[4] or not values[5] or
-   not values[6] or not values[7] then
-  remove_agent()
-  return nil
-end
-if redis.call('HGET', values[4], 'incarnation') ~= values[5] then
-  remove_agent()
-  return nil
-end
+var readLiveAgentScript = redisclient.NewScript(agentReadValidationLua + `
+local values = live_agent(KEYS[1], KEYS[2], KEYS[3], ARGV[1])
+if not values then return nil end
 return {values[1], values[2]}
 `)
 
-var readRelayAgentScript = redisclient.NewScript(`
-local function remove_agent()
-  local relay_agents_key = redis.call('HGET', KEYS[1], 'relay_agents_key')
-  if relay_agents_key then redis.call('ZREM', relay_agents_key, ARGV[1]) end
-  redis.call('DEL', KEYS[1])
-  redis.call('ZREM', KEYS[2], ARGV[1])
-  redis.call('ZREM', KEYS[3], ARGV[1])
-end
-if redis.call('EXISTS', KEYS[1]) == 0 then
-  redis.call('ZREM', KEYS[2], ARGV[1])
-  redis.call('ZREM', KEYS[3], ARGV[1])
-  return nil
-end
-local values = redis.call('HMGET', KEYS[1],
-  'id', 'last_heartbeat_ms', 'relay_id', 'relay_key',
-  'relay_incarnation', 'relay_agents_key', 'placement_updated_ms')
-if not values[1] or values[1] ~= ARGV[1] or
-   not values[2] or not string.match(values[2], '^%d+$') or
-   not values[3] or values[3] ~= ARGV[2] or
-   not values[4] or values[4] ~= KEYS[4] or
-   not values[5] or values[5] ~= ARGV[3] or
-   not values[6] or values[6] ~= KEYS[3] or not values[7] then
-  remove_agent()
-  return nil
-end
-if redis.call('HGET', KEYS[4], 'incarnation') ~= values[5] then
-  remove_agent()
+var readRelayAgentScript = redisclient.NewScript(agentReadValidationLua + `
+local values = live_agent(KEYS[1], KEYS[2], KEYS[5], ARGV[1])
+if not values then return nil end
+if values[3] ~= ARGV[2] or values[4] ~= KEYS[4] or
+   values[5] ~= ARGV[3] or values[6] ~= KEYS[3] then
+  -- live_agent proved that the entity belongs to a valid current placement.
+  -- A stale relay-list snapshot must never follow that placement and delete it.
+  -- It may only repair a membership key that is distinct from the current one.
+  if KEYS[3] ~= values[6] then redis.call('ZREM', KEYS[3], ARGV[1]) end
   return nil
 end
 return {values[1], values[2]}
