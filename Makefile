@@ -40,7 +40,7 @@ test:
 	@echo "Running tests..."
 	go test -v ./...
 
-# Run tests that require a real Redis server (REDIS_TEST_ADDR defaults to localhost:6379)
+# Run tests that start Redis 8.8.1 with Testcontainers (or use REDIS_TEST_ADDR)
 test-integration:
 	@echo "Running Redis integration tests..."
 	go test -tags=integration -v ./internal/registry/backend/redis

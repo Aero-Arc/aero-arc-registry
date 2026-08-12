@@ -15,11 +15,14 @@ import (
 )
 
 // TestRedisIntegration exercises the backend against a real Redis server.
-// CI provides one at localhost:6379; local runs can override REDIS_TEST_ADDR.
+// By default the test owns a Redis container; REDIS_TEST_ADDR opts into an
+// externally managed server instead.
 func TestRedisIntegration(t *testing.T) {
 	address := os.Getenv("REDIS_TEST_ADDR")
 	if address == "" {
-		address = "127.0.0.1:6379"
+		address = startRedisTestContainer(t)
+	} else {
+		t.Logf("Using externally managed Redis test dependency: endpoint=%s", address)
 	}
 
 	client := redisclient.NewClient(&redisclient.Options{Addr: address})

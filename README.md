@@ -39,7 +39,7 @@ In the broader Aero Arc system, the registry sits between relays/agents and cont
 
 ## Run with Redis
 
-Start Redis 8.8 or newer (CI pins the current stable `8.8.1` image), then run:
+Start Redis 8.8 or newer (integration tests pin `redis:8.8.1-alpine`), then run:
 
 ```sh
 go run ./cmd/aero-arc-registry \

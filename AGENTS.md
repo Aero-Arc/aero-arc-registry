@@ -19,7 +19,7 @@ This service is the gRPC-only control plane for current relay liveness and agent
 
 - The module requires Go 1.24 (`toolchain go1.24.9`).
 - Format with `gofmt`; run `go test ./...`, `go test -race ./...`, `go vet ./...`, and `staticcheck ./...` before handoff.
-- Real Redis coverage uses the `integration` build tag and `REDIS_TEST_ADDR` (default `127.0.0.1:6379`): `go test -tags=integration ./internal/registry/backend/redis`.
+- Real Redis coverage uses the `integration` build tag. By default Testcontainers starts the pinned Redis image on a dynamic port; `REDIS_TEST_ADDR` opts into an externally managed server: `go test -tags=integration ./internal/registry/backend/redis`.
 - Tests must not flush shared Redis databases. Use unique namespaces and explicit cleanup.
 - Public transport changes require updating the external `aero-arc-protos` module; do not edit generated protobuf code here.
 - Commits require a DCO `Signed-off-by` trailer.

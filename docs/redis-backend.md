@@ -48,11 +48,11 @@ go test ./...
 go test -race ./...
 ```
 
-Run the real Redis integration test against `127.0.0.1:6379`, or override the address:
+Run the real Redis integration test with Docker available. Testcontainers starts the pinned `redis:8.8.1-alpine` image on a dynamic host port, waits for readiness, captures logs on failure, and removes the container afterward. If Docker is unavailable, the test skips consistently with the Relay integration harness. Set `REDIS_TEST_ADDR` only to use an externally managed Redis server instead:
 
 ```sh
 go test -tags=integration ./internal/registry/backend/redis
 REDIS_TEST_ADDR=127.0.0.1:6380 go test -tags=integration ./internal/registry/backend/redis
 ```
 
-The integration test uses a unique namespace and removes its keys when complete. It never flushes the selected Redis database.
+The integration test uses a unique namespace and removes its keys when complete. It never binds a fixed Redis port and never flushes the selected Redis database.
