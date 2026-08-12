@@ -148,8 +148,8 @@ func TestRedisIntegration(t *testing.T) {
 	}
 
 	registerRelay(t, backend, "relay-heartbeat-corrupt")
-	if err := client.HDel(ctx, backend.relayKey("relay-heartbeat-corrupt"), "address").Err(); err != nil {
-		t.Fatalf("corrupt relay heartbeat target: %v", err)
+	if err := client.Persist(ctx, backend.relayKey("relay-heartbeat-corrupt")).Err(); err != nil {
+		t.Fatalf("persist relay heartbeat target: %v", err)
 	}
 	if err := backend.HeartbeatRelay(ctx, "relay-heartbeat-corrupt"); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("HeartbeatRelay(corrupt target) error = %v, want ErrNotFound", err)
@@ -162,8 +162,8 @@ func TestRedisIntegration(t *testing.T) {
 	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-heartbeat-corrupt"}, "relay-agent-heartbeat"); err != nil {
 		t.Fatalf("RegisterAgent(heartbeat scenario) error = %v", err)
 	}
-	if err := client.HSet(ctx, backend.agentKey("agent-heartbeat-corrupt"), "placement_updated_ms", "invalid").Err(); err != nil {
-		t.Fatalf("corrupt agent heartbeat target: %v", err)
+	if err := client.Persist(ctx, backend.agentKey("agent-heartbeat-corrupt")).Err(); err != nil {
+		t.Fatalf("persist agent heartbeat target: %v", err)
 	}
 	if err := backend.HeartbeatAgent(ctx, "agent-heartbeat-corrupt", "relay-agent-heartbeat"); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("HeartbeatAgent(corrupt target) error = %v, want ErrNotFound", err)

@@ -4,7 +4,7 @@ Redis is the production registry backend. It stores only current control-plane s
 
 ## Liveness and consistency
 
-- Relay and agent hashes use Redis-native millisecond TTLs. Registration and heartbeats renew the relevant TTL only after atomically validating the complete entity, ownership relationship, and live indexes; corrupt records are rejected and repaired without partial renewal.
+- Relay and agent hashes use Redis-native millisecond TTLs. A positive native TTL is part of entity validity; persistent hashes or relay-membership indexes are corrupt state. Registration and heartbeats renew the relevant TTL only after atomically validating the complete entity, ownership relationship, live indexes, and native expiries; corrupt records are rejected and repaired without partial renewal.
 - Mutating scripts use Redis `TIME`, so timestamps do not depend on the clock of a particular registry replica.
 - A relay registration creates a monotonically increasing Redis-issued incarnation when no live hash exists. Idempotent retries and metadata updates preserve the active incarnation and agent membership. Re-creation after expiry or removal receives a new incarnation; agent registrations capture it, and reads and heartbeats reject surviving hashes from the prior relay instance.
 - An agent is live only while both its agent hash and assigned relay hash exist. A relay expiry therefore removes its agents from registry reads immediately, even before the periodic registry sweep runs.
