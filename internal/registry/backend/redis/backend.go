@@ -432,14 +432,6 @@ func decodeUnixMilli(value string) (time.Time, error) {
 	return time.UnixMilli(milliseconds), nil
 }
 
-func redisString(values []interface{}, index int) (string, bool) {
-	if index >= len(values) || values[index] == nil {
-		return "", false
-	}
-	value, ok := values[index].(string)
-	return value, ok
-}
-
 // Redis TIME is used inside every mutating script so all registry replicas
 // share one timestamp authority. Concatenating seconds and milliseconds avoids
 // loss of epoch precision in Lua's IEEE-754 numbers.
