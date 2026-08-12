@@ -31,6 +31,36 @@ func TestNewValidatesConfiguration(t *testing.T) {
 	if _, err := New(validConfig, registry.TTLConfig{}); !errors.Is(err, registry.ErrTTLAgentInvalid) {
 		t.Fatalf("New(invalid TTL) error = %v, want ErrTTLAgentInvalid", err)
 	}
+
+	tests := []struct {
+		name string
+		ttl  registry.TTLConfig
+		want string
+	}{
+		{
+			name: "agent below Redis precision",
+			ttl:  registry.TTLConfig{Relay: time.Millisecond, Agent: time.Millisecond - time.Nanosecond},
+			want: "redis agent ttl must be at least 1ms",
+		},
+		{
+			name: "relay below Redis precision",
+			ttl:  registry.TTLConfig{Relay: time.Millisecond - time.Nanosecond, Agent: time.Millisecond},
+			want: "redis relay ttl must be at least 1ms",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := New(validConfig, tt.ttl); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("New(%+v) error = %v, want error containing %q", tt.ttl, err, tt.want)
+			}
+		})
+	}
+
+	backend, err := New(validConfig, registry.TTLConfig{Relay: time.Millisecond, Agent: time.Millisecond})
+	if err != nil {
+		t.Fatalf("New(1ms TTLs) error = %v", err)
+	}
+	t.Cleanup(func() { _ = backend.Close(context.Background()) })
 }
 
 func TestRelayLifecycle(t *testing.T) {

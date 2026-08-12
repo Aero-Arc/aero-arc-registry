@@ -48,6 +48,12 @@ func New(cfg *registry.RedisConfig, ttl registry.TTLConfig) (*Backend, error) {
 	if err := ttl.Validate(); err != nil {
 		return nil, fmt.Errorf("redis ttl config invalid: %w", err)
 	}
+	if ttl.Agent < time.Millisecond {
+		return nil, fmt.Errorf("redis agent ttl must be at least %s (got %s)", time.Millisecond, ttl.Agent)
+	}
+	if ttl.Relay < time.Millisecond {
+		return nil, fmt.Errorf("redis relay ttl must be at least %s (got %s)", time.Millisecond, ttl.Relay)
+	}
 
 	client := redisclient.NewClient(&redisclient.Options{
 		Addr:     net.JoinHostPort(cfg.Address, strconv.Itoa(cfg.Port)),
