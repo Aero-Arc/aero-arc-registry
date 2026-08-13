@@ -9,7 +9,7 @@ This solves the problem of keeping relay liveness and agent ownership visible an
 - **Control-plane service**: stores and serves metadata only.
 - **Data-plane**: relay and agent traffic flows elsewhere; the registry never forwards traffic.
 - **gRPC-only**: all external interaction happens over gRPC.
-- **Pluggable storage backends**: Redis, Consul, etcd, and in-memory implementations are supported through a Go interface.
+- **Pluggable storage backends**: production Redis and development in-memory implementations share a Go interface. Consul and etcd are reserved backend types and are not implemented yet.
 
 In the broader Aero Arc system, the registry sits between relays/agents and control-plane consumers. Relays and agents register and renew TTL-based ownership; control-plane consumers query the current state to drive routing and operational views.
 
@@ -32,6 +32,24 @@ In the broader Aero Arc system, the registry sits between relays/agents and cont
 - Query current relay and ownership state for routing and operator views.
 
 ## Status / Roadmap
-- Early, focused control-plane service with a stable gRPC surface.
-- Backend implementations and operational tooling will evolve independently.
+- The in-memory backend is intended for local development and tests.
+- The Redis backend is the production backend. It uses Redis-native expiration, atomic placement updates, and server-side timestamps; the local-clock registry sweep is disabled for Redis.
+- Consul and etcd currently return `ErrNotImplemented`.
 - Backward-compatible API evolution is prioritized over feature expansion.
+
+## Run with Redis
+
+Start Redis 8.8 or newer (integration tests pin `redis:8.8.1-alpine`), then run:
+
+```sh
+go run ./cmd/aero-arc-registry \
+  --backend redis \
+  --redis-addr 127.0.0.1 \
+  --redis-port 6379 \
+  --relay-ttl 30s \
+  --agent-ttl 30s
+```
+
+Authentication is configured with `--redis-user` and `--redis-password`; select a logical database with `--redis-db`. Redis connections are established lazily, so a connection or authentication failure is returned by the first registry operation.
+
+See [docs/redis-backend.md](docs/redis-backend.md) for the storage model, liveness behavior, and integration-test instructions.

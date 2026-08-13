@@ -17,7 +17,7 @@ type transportBackendStub struct {
 	heartbeatRelayFn    func(ctx context.Context, relayID string) error
 	listRelaysFn        func(ctx context.Context) ([]registry.Relay, error)
 	registerAgentFn     func(ctx context.Context, agent registry.Agent, relayID string) error
-	heartbeatAgentFn    func(ctx context.Context, agentID string) error
+	heartbeatAgentFn    func(ctx context.Context, agentID, expectedRelayID string) error
 	getPlacementFn      func(ctx context.Context, agentID string) (*registry.AgentPlacement, error)
 	listAgentsFn        func(ctx context.Context) ([]registry.Agent, error)
 	listRelayAgentsFn   func(ctx context.Context, relayID string) ([]*registry.Agent, error)
@@ -29,6 +29,7 @@ type transportBackendStub struct {
 	lastRegisteredAgent registry.Agent
 	lastAgentRelayID    string
 	lastAgentHeartbeat  string
+	lastHeartbeatRelay  string
 }
 
 func (b *transportBackendStub) RegisterRelay(ctx context.Context, relay registry.Relay) error {
@@ -63,10 +64,11 @@ func (b *transportBackendStub) RegisterAgent(ctx context.Context, agent registry
 	return nil
 }
 
-func (b *transportBackendStub) HeartbeatAgent(ctx context.Context, agentID string) error {
+func (b *transportBackendStub) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	b.lastAgentHeartbeat = agentID
+	b.lastHeartbeatRelay = expectedRelayID
 	if b.heartbeatAgentFn != nil {
-		return b.heartbeatAgentFn(ctx, agentID)
+		return b.heartbeatAgentFn(ctx, agentID, expectedRelayID)
 	}
 	return nil
 }
@@ -261,19 +263,40 @@ func TestRegisterAgent(t *testing.T) {
 func TestHeartbeatAgent(t *testing.T) {
 	t.Parallel()
 
+	t.Run("requires agent and relay IDs", func(t *testing.T) {
+		t.Parallel()
+		s := newTransportTestServer(t, &transportBackendStub{})
+		for name, request := range map[string]*registryv1.HeartbeatAgentRequest{
+			"agent": {RelayId: "relay-1"},
+			"relay": {AgentId: "agent-1"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				_, err := s.HeartbeatAgent(context.Background(), request)
+				if status.Code(err) != codes.InvalidArgument {
+					t.Fatalf("HeartbeatAgent() error = %v, want InvalidArgument", err)
+				}
+			})
+		}
+	})
+
 	b := &transportBackendStub{
-		heartbeatAgentFn: func(ctx context.Context, agentID string) error {
+		heartbeatAgentFn: func(ctx context.Context, agentID, expectedRelayID string) error {
 			return registry.ErrInvalid
 		},
 	}
 	s := newTransportTestServer(t, b)
 
-	_, err := s.HeartbeatAgent(context.Background(), &registryv1.HeartbeatAgentRequest{AgentId: "agent-1"})
+	_, err := s.HeartbeatAgent(context.Background(), &registryv1.HeartbeatAgentRequest{
+		AgentId: "agent-1", RelayId: "relay-1",
+	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", status.Code(err))
 	}
 	if b.lastAgentHeartbeat != "agent-1" {
 		t.Fatalf("expected agent-1 heartbeat, got %q", b.lastAgentHeartbeat)
+	}
+	if b.lastHeartbeatRelay != "relay-1" {
+		t.Fatalf("expected relay-1 heartbeat owner, got %q", b.lastHeartbeatRelay)
 	}
 }
 

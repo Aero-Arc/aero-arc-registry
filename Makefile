@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: build build-all run test test-coverage test-race bench test-all clean \
+.PHONY: build build-all run test test-integration test-coverage test-race bench test-all clean \
 	fmt lint vet staticcheck quality install-tools security deps docs dev \
 	pre-commit release help
 
@@ -40,6 +40,11 @@ test:
 	@echo "Running tests..."
 	go test -v ./...
 
+# Run tests that start Redis 8.8.1 with Testcontainers (or use REDIS_TEST_ADDR)
+test-integration:
+	@echo "Running Redis integration tests..."
+	go test -tags=integration -v ./internal/registry/backend/redis
+
 # Run tests with coverage
 test-coverage: $(COVERAGE_DIR)
 	@echo "Running tests with coverage..."
@@ -59,7 +64,7 @@ bench: $(BENCH_DIR)
 	@echo "Benchmark results saved to $(BENCH_DIR)/benchmark.txt"
 
 # Run all tests (unit, integration, race, coverage)
-test-all: test test-race test-coverage
+test-all: test test-integration test-race test-coverage
 	@echo "All tests completed"
 
 # Clean build artifacts
@@ -186,9 +191,10 @@ help:
 	@echo ""
 	@echo "  Testing:"
 	@echo "    test          - Run tests"
+	@echo "    test-integration - Run tests against a real Redis server"
 	@echo "    test-coverage - Run tests with coverage report"
 	@echo "    test-race     - Run tests with race detection"
-	@echo "    test-all      - Run all tests (unit, race, coverage)"
+	@echo "    test-all      - Run all tests (unit, integration, race, coverage)"
 	@echo "    bench         - Run benchmarks"
 	@echo ""
 	@echo "  Code Quality:"

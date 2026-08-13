@@ -17,7 +17,7 @@ type Backend interface {
 
 	// Agent lifecycle
 	RegisterAgent(ctx context.Context, agent Agent, relayID string) error
-	HeartbeatAgent(ctx context.Context, agentID string) error
+	HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error
 	GetAgentPlacement(ctx context.Context, agentID string) (*AgentPlacement, error)
 	ListAgents(ctx context.Context) ([]Agent, error)
 	// TODO(registry-ttl): add indexed stale query + batch placement APIs:
@@ -31,6 +31,13 @@ type Backend interface {
 
 	// Shutdown
 	Close(ctx context.Context) error
+}
+
+// TTLManagedBackend is an optional backend capability indicating that entity
+// expiry is enforced atomically by the backend using its own clock. The
+// registry service must not apply its local-clock TTL sweep to these backends.
+type TTLManagedBackend interface {
+	ManagesTTL() bool
 }
 
 // Relay represents a relay instance registered with the registry.

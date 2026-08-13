@@ -14,8 +14,9 @@
 // datastore or coordination mechanism.
 //
 // Liveness semantics such as heartbeats and time-to-live (TTL) enforcement
-// are implemented at the registry layer, ensuring consistent behavior across
-// all backend implementations.
+// are implemented at the registry/backend boundary. Backends with a native
+// clock and atomic expiry own TTL enforcement; other backends use the registry
+// service's cleanup loop.
 //
 // The registry exposes its functionality over gRPC and is intended to be
 // deployed as a standalone, horizontally scalable control plane service.
@@ -81,10 +82,10 @@ func (r *Registry) RegisterAgent(ctx context.Context, agent Agent, relayID strin
 	return r.backend.RegisterAgent(ctx, agent, relayID)
 }
 
-func (r *Registry) HeartbeatAgent(ctx context.Context, agentID string) error {
+func (r *Registry) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	// TODO(registry-ttl): move heartbeat timestamp source of truth to registry
 	// write path (backend should persist registry-assigned time).
-	return r.backend.HeartbeatAgent(ctx, agentID)
+	return r.backend.HeartbeatAgent(ctx, agentID, expectedRelayID)
 }
 
 func (r *Registry) GetAgentPlacement(ctx context.Context, agentID string) (*AgentPlacement, error) {
@@ -104,6 +105,13 @@ func (r *Registry) RemoveAgents(ctx context.Context, agentIDs []string) error {
 }
 
 func (r *Registry) RunTTL(ctx context.Context) {
+	if r.backendManagesTTL() {
+		slog.LogAttrs(ctx, slog.LevelDebug, "ttl loop disabled; backend manages expiry",
+			slog.String("method", "RunTTL"),
+		)
+		return
+	}
+
 	// TODO(registry-ttl): evaluate distributed cleanup coordination for large
 	// deployments (leader election, shard ownership, or backend advisory locks).
 	if !r.ttlLoopRunning.CompareAndSwap(false, true) {
@@ -137,6 +145,13 @@ func (r *Registry) RunTTL(ctx context.Context) {
 }
 
 func (r *Registry) runTTLCleanup(ctx context.Context, now time.Time) error {
+	// A native-TTL backend owns both the time authority and expiry decision.
+	// Comparing its timestamps to this process's clock can delete records that
+	// were freshly renewed when the two clocks are skewed.
+	if r.backendManagesTTL() {
+		return nil
+	}
+
 	// TODO(registry-ttl): add metrics instrumentation:
 	// ttl_cleanup_duration_ms, ttl_relays_removed_total, ttl_agents_removed_total,
 	// ttl_skipped_runs_total, ttl_errors_total.
@@ -267,6 +282,11 @@ func (r *Registry) runTTLCleanup(ctx context.Context, now time.Time) error {
 	}
 
 	return errs.Err()
+}
+
+func (r *Registry) backendManagesTTL() bool {
+	backend, ok := r.backend.(TTLManagedBackend)
+	return ok && backend.ManagesTTL()
 }
 
 func (r *Registry) nextTTLCleanupInterval() time.Duration {

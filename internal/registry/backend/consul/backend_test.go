@@ -38,7 +38,7 @@ func TestBackendMethodsReturnNotImplemented(t *testing.T) {
 		t.Fatalf("expected ErrNotImplemented, got %v", err)
 	}
 
-	if err := backend.HeartbeatAgent(ctx, "agent"); !errors.Is(err, registry.ErrNotImplemented) {
+	if err := backend.HeartbeatAgent(ctx, "agent", "relay"); !errors.Is(err, registry.ErrNotImplemented) {
 		t.Fatalf("expected ErrNotImplemented, got %v", err)
 	}
 

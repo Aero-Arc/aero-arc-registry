@@ -93,8 +93,9 @@ func TestBuildBackendFromConfig(t *testing.T) {
 			cfg: &registry.Config{
 				Backend: registry.BackendConfig{
 					Type:  registry.RedisRegistryBackend,
-					Redis: &registry.RedisConfig{},
+					Redis: &registry.RedisConfig{Address: "localhost", Port: 6379},
 				},
+				TTL: registry.TTLConfig{Relay: 30 * time.Second, Agent: 30 * time.Second},
 			},
 			assert: func(t *testing.T, b registry.Backend) {
 				if _, ok := b.(*redis.Backend); !ok {

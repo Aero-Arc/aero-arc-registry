@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -86,7 +87,7 @@ func TestAgentLifecycle(t *testing.T) {
 	}
 
 	agentHeartbeatStart := time.Now()
-	if err := backend.HeartbeatAgent(ctx, agent.ID); err != nil {
+	if err := backend.HeartbeatAgent(ctx, agent.ID, relay.ID); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
@@ -108,6 +109,56 @@ func TestAgentLifecycle(t *testing.T) {
 	}
 	if placement.AgentID != agent.ID || placement.RelayID != relay.ID {
 		t.Fatalf("unexpected placement after relay removal: %#v", placement)
+	}
+}
+
+func TestAgentHeartbeatRequiresCurrentRelayOwnership(t *testing.T) {
+	backend, err := New(&registry.MemoryConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, relayID := range []string{"relay-a", "relay-b"} {
+		if err := backend.RegisterRelay(ctx, registry.Relay{ID: relayID, Address: "127.0.0.1", GRPCPort: 9000}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-1"}, "relay-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.RegisterAgent(ctx, registry.Agent{ID: "agent-1"}, "relay-b"); err != nil {
+		t.Fatal(err)
+	}
+	placementAfterTakeover, err := backend.GetAgentPlacement(ctx, "agent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := backend.HeartbeatAgent(ctx, "agent-1", "relay-a"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("old relay heartbeat error = %v, want ErrNotFound", err)
+	}
+	placementAfterRejected, err := backend.GetAgentPlacement(ctx, "agent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *placementAfterRejected != *placementAfterTakeover {
+		t.Fatalf("rejected heartbeat mutated placement: before=%+v after=%+v", placementAfterTakeover, placementAfterRejected)
+	}
+
+	time.Sleep(time.Millisecond)
+	if err := backend.HeartbeatAgent(ctx, "agent-1", "relay-b"); err != nil {
+		t.Fatalf("current relay heartbeat error = %v", err)
+	}
+	placementAfterAccepted, err := backend.GetAgentPlacement(ctx, "agent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !placementAfterAccepted.UpdatedAt.After(placementAfterRejected.UpdatedAt) {
+		t.Fatalf("accepted heartbeat did not renew placement: before=%v after=%v", placementAfterRejected.UpdatedAt, placementAfterAccepted.UpdatedAt)
+	}
+
+	if err := backend.HeartbeatAgent(ctx, "agent-1", "relay-missing"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("missing relay heartbeat error = %v, want ErrNotFound", err)
 	}
 }
 
