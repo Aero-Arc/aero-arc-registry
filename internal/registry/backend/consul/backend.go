@@ -1,4 +1,4 @@
-// Package consul provides a stub Consul backend implementation.
+// Package is not implemented by the consul backend stub.
 package consul
 
 import (
@@ -11,67 +11,67 @@ type Backend struct {
 	cfg *registry.ConsulConfig
 }
 
-// New constructs consul from the supplied configuration and dependencies.
+// New constructs the consul backend stub without opening a connection.
 //
 // Parameters:
 //   - cfg: provides the configuration values used to initialize or execute the operation.
 //
 // Returns:
 //   - result: is the *Backend value produced by New.
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always nil for the backend stub.
 func New(cfg *registry.ConsulConfig) (*Backend, error) {
 	return &Backend{cfg: cfg}, nil
 }
 
-// RegisterRelay registers the supplied Backend identity or handler.
+// RegisterRelay is not implemented by the consul backend stub.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
 //   - relay: is the registry.Relay value supplied to RegisterRelay.
 //
 // Returns:
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always registry.ErrNotImplemented.
 func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error {
 	return registry.ErrNotImplemented
 }
 
-// HeartbeatRelay renews liveness for the supplied Backend identity without changing ownership.
+// HeartbeatRelay is not implemented by the consul backend stub.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
 //   - relayID: identifies the target relay.
 //
 // Returns:
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always registry.ErrNotImplemented.
 func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string) error {
 	return registry.ErrNotImplemented
 }
 
-// ListRelays returns Backend records matching the supplied scope and filters.
+// ListRelays is not implemented by the consul backend stub.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
 //
 // Returns:
 //   - result: is the []registry.Relay value produced by ListRelays.
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always registry.ErrNotImplemented.
 func (b *Backend) ListRelays(ctx context.Context) ([]registry.Relay, error) {
 	return nil, registry.ErrNotImplemented
 }
 
-// RemoveRelay removes the selected Backend records and associated live indexes.
+// RemoveRelay is not implemented by the consul backend stub.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
 //   - relayID: identifies the target relay.
 //
 // Returns:
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always registry.ErrNotImplemented.
 func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 	return registry.ErrNotImplemented
 }
 
-// RegisterAgent registers the supplied Backend identity or handler.
+// RegisterAgent is not implemented by the consul backend stub.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
@@ -79,12 +79,12 @@ func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 //   - relayID: identifies the target relay.
 //
 // Returns:
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always registry.ErrNotImplemented.
 func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relayID string) error {
 	return registry.ErrNotImplemented
 }
 
-// HeartbeatAgent renews liveness for the supplied Backend identity without changing ownership.
+// HeartbeatAgent is not implemented by the consul backend stub.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
@@ -92,12 +92,12 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 //   - expectedRelayID: identifies the target expectedrelay.
 //
 // Returns:
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always registry.ErrNotImplemented.
 func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	return registry.ErrNotImplemented
 }
 
-// GetAgentPlacement reports that the Consul backend is not implemented.
+// GetAgentPlacement is not implemented by the consul backend stub.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
@@ -105,24 +105,24 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID s
 //
 // Returns:
 //   - result: is the *registry.AgentPlacement value produced by GetAgentPlacement.
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always registry.ErrNotImplemented.
 func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*registry.AgentPlacement, error) {
 	return nil, registry.ErrNotImplemented
 }
 
-// ListAgents returns Backend records matching the supplied scope and filters.
+// ListAgents is not implemented by the consul backend stub.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
 //
 // Returns:
 //   - result: is the []registry.Agent value produced by ListAgents.
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always registry.ErrNotImplemented.
 func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 	return nil, registry.ErrNotImplemented
 }
 
-// ListRelayAgents returns Backend records matching the supplied scope and filters.
+// ListRelayAgents is not implemented by the consul backend stub.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
@@ -130,30 +130,30 @@ func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 //
 // Returns:
 //   - result: is the []*registry.Agent value produced by ListRelayAgents.
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always registry.ErrNotImplemented.
 func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*registry.Agent, error) {
 	return nil, registry.ErrNotImplemented
 }
 
-// RemoveAgents removes the selected Backend records and associated live indexes.
+// RemoveAgents is not implemented by the consul backend stub.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
 //   - agentIDs: identifies the target agent.
 //
 // Returns:
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always registry.ErrNotImplemented.
 func (b *Backend) RemoveAgents(ctx context.Context, agentIDs []string) error {
 	return registry.ErrNotImplemented
 }
 
-// Close releases resources owned by Backend and completes any required shutdown work.
+// Close is a no-op because the consul backend stub owns no resources.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
 //
 // Returns:
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is always nil for the backend stub.
 func (b *Backend) Close(ctx context.Context) error {
 	return nil
 }
