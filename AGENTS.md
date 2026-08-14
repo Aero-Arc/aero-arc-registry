@@ -26,5 +26,11 @@ This service is the gRPC-only control plane for current relay liveness and agent
 - Tests must not flush shared Redis databases. Use unique namespaces and explicit cleanup.
 - Public transport changes require updating the external `aero-arc-protos` module; do not edit generated protobuf code here.
 - Commits require a DCO `Signed-off-by` trailer.
+- Every exported handwritten Go function or method requires a lint-valid Go doc
+  comment beginning with its exact identifier. Explain parameter meaning,
+  return/error behavior, TTL ownership, placement fencing, and atomicity where
+  applicable; prefer readable `Parameters:` and `Returns:` sections for
+  non-trivial backend and transport APIs over signature-restating prose.
+- Generated protobuf documentation remains generator-owned.
 
 `AGENT.md` contains the original architectural context and remains applicable.

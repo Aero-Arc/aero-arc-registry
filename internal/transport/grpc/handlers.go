@@ -12,6 +12,15 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// RegisterRelay registers the supplied Server identity or handler.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - req: contains the validated request payload.
+//
+// Returns:
+//   - result: is the *registryv1.RegisterRelayResponse value produced by RegisterRelay.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (s *Server) RegisterRelay(ctx context.Context, req *registryv1.RegisterRelayRequest) (*registryv1.RegisterRelayResponse, error) {
 	start := time.Now()
 	defer func() {
@@ -56,6 +65,15 @@ func (s *Server) RegisterRelay(ctx context.Context, req *registryv1.RegisterRela
 	return &registryv1.RegisterRelayResponse{}, nil
 }
 
+// HeartbeatRelay renews liveness for the supplied Server identity without changing ownership.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - req: contains the validated request payload.
+//
+// Returns:
+//   - result: is the *registryv1.HeartbeatRelayResponse value produced by HeartbeatRelay.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (s *Server) HeartbeatRelay(ctx context.Context, req *registryv1.HeartbeatRelayRequest) (*registryv1.HeartbeatRelayResponse, error) {
 	start := time.Now()
 	defer func() {
@@ -89,6 +107,15 @@ func (s *Server) HeartbeatRelay(ctx context.Context, req *registryv1.HeartbeatRe
 	return resp, nil
 }
 
+// ListRelays returns Server records matching the supplied scope and filters.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - req: contains the validated request payload.
+//
+// Returns:
+//   - result: is the *registryv1.ListRelaysResponse value produced by ListRelays.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (s *Server) ListRelays(ctx context.Context, req *registryv1.ListRelaysRequest) (*registryv1.ListRelaysResponse, error) {
 	start := time.Now()
 	defer func() {
@@ -125,6 +152,15 @@ func (s *Server) ListRelays(ctx context.Context, req *registryv1.ListRelaysReque
 	return resp, nil
 }
 
+// RegisterAgent registers the supplied Server identity or handler.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - req: contains the validated request payload.
+//
+// Returns:
+//   - result: is the *registryv1.RegisterAgentResponse value produced by RegisterAgent.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (s *Server) RegisterAgent(ctx context.Context, req *registryv1.RegisterAgentRequest) (*registryv1.RegisterAgentResponse, error) {
 	start := time.Now()
 	defer func() {
@@ -168,6 +204,15 @@ func (s *Server) RegisterAgent(ctx context.Context, req *registryv1.RegisterAgen
 	return &registryv1.RegisterAgentResponse{}, nil
 }
 
+// HeartbeatAgent renews liveness for the supplied Server identity without changing ownership.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - req: contains the validated request payload.
+//
+// Returns:
+//   - result: is the *registryv1.HeartbeatAgentResponse value produced by HeartbeatAgent.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (s *Server) HeartbeatAgent(ctx context.Context, req *registryv1.HeartbeatAgentRequest) (*registryv1.HeartbeatAgentResponse, error) {
 	start := time.Now()
 	defer func() {
@@ -202,6 +247,15 @@ func (s *Server) HeartbeatAgent(ctx context.Context, req *registryv1.HeartbeatAg
 	return &registryv1.HeartbeatAgentResponse{}, nil
 }
 
+// GetAgentPlacement validates the RPC and returns the Agent's current live Relay placement.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - req: contains the validated request payload.
+//
+// Returns:
+//   - result: is the *registryv1.GetAgentPlacementResponse value produced by GetAgentPlacement.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (s *Server) GetAgentPlacement(ctx context.Context, req *registryv1.GetAgentPlacementRequest) (*registryv1.GetAgentPlacementResponse, error) {
 	start := time.Now()
 	defer func() {
@@ -239,6 +293,15 @@ func (s *Server) GetAgentPlacement(ctx context.Context, req *registryv1.GetAgent
 	return resp, nil
 }
 
+// ListAgents returns Server records matching the supplied scope and filters.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - req: contains the validated request payload.
+//
+// Returns:
+//   - result: is the *registryv1.ListAgentsResponse value produced by ListAgents.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (s *Server) ListAgents(ctx context.Context, req *registryv1.ListAgentsRequest) (*registryv1.ListAgentsResponse, error) {
 	start := time.Now()
 	defer func() {

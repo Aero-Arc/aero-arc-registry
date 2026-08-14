@@ -11,6 +11,14 @@ import (
 	redisclient "github.com/redis/go-redis/v9"
 )
 
+// RegisterRelay registers the supplied Backend identity or handler.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relay: is the registry.Relay value supplied to RegisterRelay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error {
 	if relay.ID == "" {
 		return fmt.Errorf("relay id is empty: %w", registry.ErrInvalid)
@@ -32,6 +40,14 @@ func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error
 	return nil
 }
 
+// HeartbeatRelay renews liveness for the supplied Backend identity without changing ownership.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string) error {
 	result, err := heartbeatRelayScript.Run(ctx, b.client,
 		[]string{b.relayKey(relayID), b.relaysKey(), b.relayAgentsKey(relayID)},
@@ -46,6 +62,14 @@ func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string) error {
 	return nil
 }
 
+// ListRelays returns Backend records matching the supplied scope and filters.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - result: is the []registry.Relay value produced by ListRelays.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) ListRelays(ctx context.Context) ([]registry.Relay, error) {
 	ids, err := b.activeIndexIDs(ctx, b.relaysKey())
 	if err != nil {
@@ -95,6 +119,14 @@ func (b *Backend) ListRelays(ctx context.Context) ([]registry.Relay, error) {
 	return relays, nil
 }
 
+// RemoveRelay removes the selected Backend records and associated live indexes.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 	result, err := removeRelayScript.Run(ctx, b.client,
 		[]string{b.relayKey(relayID), b.relaysKey(), b.relayAgentsKey(relayID)}, relayID,

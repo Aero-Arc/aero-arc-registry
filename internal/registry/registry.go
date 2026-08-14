@@ -41,6 +41,16 @@ type Registry struct {
 	ttlCleanupInProgress atomic.Bool
 }
 
+// New constructs the Registry service over a liveness/placement backend after
+// validating all backend and TTL configuration.
+//
+// Parameters:
+//   - cfg: provides the configuration values used to initialize or execute the operation.
+//   - backend: persists current Relay and Agent liveness and placement.
+//
+// Returns:
+//   - registry: is ready to serve requests; its optional TTL loop is not started.
+//   - error: reports a nil or invalid configuration.
 func New(cfg *Config, backend Backend) (*Registry, error) {
 	if cfg == nil {
 		return nil, ErrNilConfig
@@ -58,52 +68,145 @@ func New(cfg *Config, backend Backend) (*Registry, error) {
 	return aeroRegistry, nil
 }
 
+// RegisterRelay creates or refreshes a Relay's current liveness record.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relay: is the Relay value supplied to RegisterRelay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) RegisterRelay(ctx context.Context, relay Relay) error {
 	// TODO(registry-ttl): make registry-owned timestamps authoritative by setting
 	// relay.LastSeen here before persisting, instead of trusting external clocks.
 	return r.backend.RegisterRelay(ctx, relay)
 }
 
+// HeartbeatRelay renews one existing Relay without changing its endpoint or incarnation.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) HeartbeatRelay(ctx context.Context, relayID string) error {
 	// TODO(registry-ttl): move heartbeat timestamp source of truth to registry
 	// write path (backend should persist registry-assigned time).
 	return r.backend.HeartbeatRelay(ctx, relayID)
 }
 
+// ListRelays returns the currently live Relays in deterministic identifier order.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - result: is the []Relay value produced by ListRelays.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) ListRelays(ctx context.Context) ([]Relay, error) {
 	return r.backend.ListRelays(ctx)
 }
 
+// RemoveRelay removes a Relay liveness record. Backends also fence or omit Agent
+// placements whose owning Relay is no longer live.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) RemoveRelay(ctx context.Context, relayID string) error {
 	return r.backend.RemoveRelay(ctx, relayID)
 }
 
+// RegisterAgent atomically creates or refreshes an Agent placement on a live
+// Relay. Registering against another Relay is the only supported ownership move.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agent: is the Agent value supplied to RegisterAgent.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) RegisterAgent(ctx context.Context, agent Agent, relayID string) error {
 	return r.backend.RegisterAgent(ctx, agent, relayID)
 }
 
+// HeartbeatAgent renews an Agent only when expectedRelayID still owns its live
+// placement; a stale Relay cannot extend or move another Relay's Agent.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agentID: identifies the target agent.
+//   - expectedRelayID: fences renewal to the Relay that believes it owns the Agent.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	// TODO(registry-ttl): move heartbeat timestamp source of truth to registry
 	// write path (backend should persist registry-assigned time).
 	return r.backend.HeartbeatAgent(ctx, agentID, expectedRelayID)
 }
 
+// GetAgentPlacement returns the Agent's current live Relay placement.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agentID: identifies the target agent.
+//
+// Returns:
+//   - result: is the *AgentPlacement value produced by GetAgentPlacement.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) GetAgentPlacement(ctx context.Context, agentID string) (*AgentPlacement, error) {
 	return r.backend.GetAgentPlacement(ctx, agentID)
 }
 
+// ListAgents returns Agents with live owning Relays in deterministic identifier order.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - result: is the []Agent value produced by ListAgents.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) ListAgents(ctx context.Context) ([]Agent, error) {
 	return r.backend.ListAgents(ctx)
 }
 
+// ListRelayAgents returns the live Agents currently owned by one live Relay.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - result: is the []*Agent value produced by ListRelayAgents.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) ListRelayAgents(ctx context.Context, relayID string) ([]*Agent, error) {
 	return r.backend.ListRelayAgents(ctx, relayID)
 }
 
+// RemoveAgents removes the selected Agent records, placements, and membership indexes.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agentIDs: identifies every Agent to remove in one backend operation.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) RemoveAgents(ctx context.Context, agentIDs []string) error {
 	return r.backend.RemoveAgents(ctx, agentIDs)
 }
 
+// RunTTL starts the service-side expiry sweeper when the backend does not own
+// native TTL enforcement. Duplicate calls are ignored, and Redis-backed
+// registries return immediately because Redis server time is authoritative.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
 func (r *Registry) RunTTL(ctx context.Context) {
 	if r.backendManagesTTL() {
 		slog.LogAttrs(ctx, slog.LevelDebug, "ttl loop disabled; backend manages expiry",
@@ -408,6 +511,13 @@ func errorsIsContextCancellation(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
+// Close releases backend connections owned by the Registry.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - error: reports context cancellation or backend shutdown failure.
 func (r *Registry) Close(ctx context.Context) error {
 	return r.backend.Close(ctx)
 }
