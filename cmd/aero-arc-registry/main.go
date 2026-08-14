@@ -102,6 +102,14 @@ var registryCmd = cli.Command{
 	},
 }
 
+// RunRegistry runs the Registry process with the supplied arguments and returns its terminal startup or runtime error.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - cmd: is the *cli.Command value supplied to RunRegistry.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func RunRegistry(ctx context.Context, cmd *cli.Command) error {
 	signalCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()

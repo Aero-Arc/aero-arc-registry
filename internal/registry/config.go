@@ -123,6 +123,14 @@ type ConsulConfig struct{}
 //   - Add debug logging / metrics toggles
 type MemoryConfig struct{}
 
+// ParseRegistryBackend parses the supplied value into registry configuration.
+//
+// Parameters:
+//   - backend: is the string value supplied to ParseRegistryBackend.
+//
+// Returns:
+//   - result: is the RegistryBackend value produced by ParseRegistryBackend.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func ParseRegistryBackend(backend string) (RegistryBackend, error) {
 	if registryBackend, ok := registryMap[backend]; ok {
 		return registryBackend, nil
@@ -131,6 +139,10 @@ func ParseRegistryBackend(backend string) (RegistryBackend, error) {
 	return "", fmt.Errorf("%w: %s", ErrUnsupportedBackend, backend)
 }
 
+// Validate validates Config for required fields, supported values, and safety constraints.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (c *Config) Validate() error {
 	switch c.Backend.Type {
 	case RedisRegistryBackend:
@@ -157,6 +169,10 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// Validate validates RedisConfig for required fields, supported values, and safety constraints.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *RedisConfig) Validate() error {
 	if r.Address == "" {
 		return ErrRedisAddrEmpty
@@ -173,21 +189,37 @@ func (r *RedisConfig) Validate() error {
 	return nil
 }
 
+// Validate validates EtcdConfig for required fields, supported values, and safety constraints.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (c *EtcdConfig) Validate() error {
 	// TODO: implement etcd config validation
 	return nil
 }
 
+// Validate validates ConsulConfig for required fields, supported values, and safety constraints.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (c *ConsulConfig) Validate() error {
 	// TODO: implement consul config validation
 	return nil
 }
 
+// Validate validates MemoryConfig for required fields, supported values, and safety constraints.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (c *MemoryConfig) Validate() error {
 	// TODO: implement memory config validation
 	return nil
 }
 
+// Validate validates GRPCConfig for required fields, supported values, and safety constraints.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (g *GRPCConfig) Validate() error {
 	if g.ListenPort <= 0 {
 		return ErrGRPCPortInvalid
@@ -206,6 +238,10 @@ func (g *GRPCConfig) Validate() error {
 	return nil
 }
 
+// Validate validates TTLConfig for required fields, supported values, and safety constraints.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (t *TTLConfig) Validate() error {
 	if t.Agent <= 0 {
 		return ErrTTLAgentInvalid

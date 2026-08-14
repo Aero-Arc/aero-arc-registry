@@ -74,6 +74,14 @@ func newBackend(client *redisclient.Client, ttl registry.TTLConfig, namespace st
 // its local clock.
 func (b *Backend) ManagesTTL() bool { return true }
 
+// Close closes the Redis client once. Subsequent calls return the first close
+// result, making backend shutdown idempotent.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - error: reports prior context cancellation or the Redis client's close failure.
 func (b *Backend) Close(ctx context.Context) error {
 	select {
 	case <-ctx.Done():

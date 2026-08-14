@@ -3,6 +3,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -34,6 +35,14 @@ type agentEntry struct {
 	agent *registry.Agent
 }
 
+// New constructs memory from the supplied configuration and dependencies.
+//
+// Parameters:
+//   - cfg: provides the configuration values used to initialize or execute the operation.
+//
+// Returns:
+//   - result: is the *Backend value produced by New.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func New(cfg *registry.MemoryConfig) (*Backend, error) {
 	return &Backend{
 		cfg:         cfg,
@@ -44,6 +53,14 @@ func New(cfg *registry.MemoryConfig) (*Backend, error) {
 	}, nil
 }
 
+// RegisterRelay registers the supplied Backend identity or handler.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relay: is the registry.Relay value supplied to RegisterRelay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error {
 	select {
 	case <-ctx.Done():
@@ -94,6 +111,14 @@ func (b *Backend) RegisterRelay(ctx context.Context, relay registry.Relay) error
 	return nil
 }
 
+// HeartbeatRelay renews liveness for the supplied Backend identity without changing ownership.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string) error {
 	b.relayMu.RLock()
 	relayEntry, exists := b.relays[relayID]
@@ -115,6 +140,14 @@ func (b *Backend) HeartbeatRelay(ctx context.Context, relayID string) error {
 	return nil
 }
 
+// ListRelays returns Backend records matching the supplied scope and filters.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - result: is the []registry.Relay value produced by ListRelays.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) ListRelays(ctx context.Context) ([]registry.Relay, error) {
 	select {
 	case <-ctx.Done():
@@ -136,10 +169,21 @@ func (b *Backend) ListRelays(ctx context.Context) ([]registry.Relay, error) {
 		entry.mu.Unlock()
 		relays = append(relays, relay)
 	}
+	sort.Slice(relays, func(i, j int) bool {
+		return relays[i].ID < relays[j].ID
+	})
 
 	return relays, nil
 }
 
+// RemoveRelay removes the selected Backend records and associated live indexes.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 	select {
 	case <-ctx.Done():
@@ -156,12 +200,29 @@ func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 	if _, exists := b.relays[relayID]; !exists {
 		return errRelayNotRegistered
 	}
+	for agentID := range b.relayAgents[relayID] {
+		placement, placed := b.placements[agentID]
+		if !placed || placement.RelayID != relayID {
+			continue
+		}
+		delete(b.placements, agentID)
+		delete(b.agents, agentID)
+	}
 	delete(b.relays, relayID)
 	delete(b.relayAgents, relayID)
 
 	return nil
 }
 
+// RegisterAgent registers the supplied Backend identity or handler.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agent: is the registry.Agent value supplied to RegisterAgent.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relayID string) error {
 	select {
 	case <-ctx.Done():
@@ -222,6 +283,15 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 	return nil
 }
 
+// HeartbeatAgent renews liveness for the supplied Backend identity without changing ownership.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agentID: identifies the target agent.
+//   - expectedRelayID: identifies the target expectedrelay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	select {
 	case <-ctx.Done():
@@ -254,6 +324,15 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID s
 	return nil
 }
 
+// GetAgentPlacement returns an Agent's live in-memory Relay placement.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agentID: identifies the target agent.
+//
+// Returns:
+//   - result: is the *registry.AgentPlacement value produced by GetAgentPlacement.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*registry.AgentPlacement, error) {
 	select {
 	case <-ctx.Done():
@@ -274,6 +353,14 @@ func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*regis
 	return &result, nil
 }
 
+// ListAgents returns Backend records matching the supplied scope and filters.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - result: is the []registry.Agent value produced by ListAgents.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 	select {
 	case <-ctx.Done():
@@ -296,10 +383,22 @@ func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 
 		agents[i] = agent
 	}
+	sort.Slice(agents, func(i, j int) bool {
+		return agents[i].ID < agents[j].ID
+	})
 
 	return agents, nil
 }
 
+// ListRelayAgents returns Backend records matching the supplied scope and filters.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - result: is the []*registry.Agent value produced by ListRelayAgents.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*registry.Agent, error) {
 	select {
 	case <-ctx.Done():
@@ -330,10 +429,21 @@ func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*regis
 
 		agents = append(agents, &agentCopy)
 	}
+	sort.Slice(agents, func(i, j int) bool {
+		return agents[i].ID < agents[j].ID
+	})
 
 	return agents, nil
 }
 
+// RemoveAgents removes the selected Backend records and associated live indexes.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agentIDs: identifies the target agent.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) RemoveAgents(ctx context.Context, agentIDs []string) error {
 	select {
 	case <-ctx.Done():
@@ -387,6 +497,13 @@ func (b *Backend) setPlacementLocked(agentID, relayID string, entry *agentEntry,
 	relayEntries[agentID] = entry
 }
 
+// Close releases resources owned by Backend and completes any required shutdown work.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) Close(ctx context.Context) error {
 	return nil
 }

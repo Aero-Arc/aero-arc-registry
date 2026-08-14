@@ -10,6 +10,15 @@ import (
 	redisclient "github.com/redis/go-redis/v9"
 )
 
+// RegisterAgent registers the supplied Backend identity or handler.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agent: is the registry.Agent value supplied to RegisterAgent.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relayID string) error {
 	if agent.ID == "" {
 		return fmt.Errorf("agent id is empty: %w", registry.ErrInvalid)
@@ -34,6 +43,15 @@ func (b *Backend) RegisterAgent(ctx context.Context, agent registry.Agent, relay
 	return nil
 }
 
+// HeartbeatAgent renews liveness for the supplied Backend identity without changing ownership.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agentID: identifies the target agent.
+//   - expectedRelayID: identifies the target expectedrelay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID string) error {
 	result, err := heartbeatAgentScript.Run(ctx, b.client,
 		[]string{
@@ -54,6 +72,15 @@ func (b *Backend) HeartbeatAgent(ctx context.Context, agentID, expectedRelayID s
 	return nil
 }
 
+// GetAgentPlacement atomically validates and returns an Agent's live Redis placement.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agentID: identifies the target agent.
+//
+// Returns:
+//   - result: is the *registry.AgentPlacement value produced by GetAgentPlacement.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*registry.AgentPlacement, error) {
 	values, err := liveAgentScript.Run(ctx, b.client,
 		[]string{b.agentKey(agentID), b.agentsKey(), b.relaysKey()}, agentID, b.relayKeyPrefix(), b.relayAgentsKeyPrefix(),
@@ -77,6 +104,14 @@ func (b *Backend) GetAgentPlacement(ctx context.Context, agentID string) (*regis
 	}, nil
 }
 
+// ListAgents returns Backend records matching the supplied scope and filters.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - result: is the []registry.Agent value produced by ListAgents.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 	ids, err := b.activeIndexIDs(ctx, b.agentsKey())
 	if err != nil {
@@ -120,6 +155,15 @@ func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 	return agents, nil
 }
 
+// ListRelayAgents returns Backend records matching the supplied scope and filters.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - result: is the []*registry.Agent value produced by ListRelayAgents.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*registry.Agent, error) {
 	relayValues, err := readLiveRelayScript.Run(ctx, b.client,
 		[]string{b.relayKey(relayID), b.relaysKey(), b.relayAgentsKey(relayID)}, relayID,
@@ -188,6 +232,14 @@ func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*regis
 	return agents, nil
 }
 
+// RemoveAgents removes the selected Backend records and associated live indexes.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - agentIDs: identifies the target agent.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *Backend) RemoveAgents(ctx context.Context, agentIDs []string) error {
 	if len(agentIDs) == 0 {
 		return nil
