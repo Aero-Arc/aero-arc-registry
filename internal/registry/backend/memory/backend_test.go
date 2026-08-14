@@ -104,11 +104,64 @@ func TestAgentLifecycle(t *testing.T) {
 	}
 
 	placement, err = backend.GetAgentPlacement(ctx, agent.ID)
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
+	if !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("placement error after relay removal = %v, want ErrNotFound", err)
 	}
-	if placement.AgentID != agent.ID || placement.RelayID != relay.ID {
-		t.Fatalf("unexpected placement after relay removal: %#v", placement)
+	if placement != nil {
+		t.Fatalf("placement after relay removal = %#v, want nil", placement)
+	}
+
+	agents, err := backend.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("list agents after relay removal: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("agents after relay removal = %#v, want empty", agents)
+	}
+}
+
+func TestListsAreDeterministicByID(t *testing.T) {
+	backend, err := New(&registry.MemoryConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	for _, relayID := range []string{"relay-z", "relay-a", "relay-m"} {
+		if err := backend.RegisterRelay(ctx, registry.Relay{ID: relayID, Address: "127.0.0.1", GRPCPort: 9000}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	relays, err := backend.ListRelays(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"relay-a", "relay-m", "relay-z"} {
+		if relays[i].ID != want {
+			t.Fatalf("relay[%d].ID = %q, want %q", i, relays[i].ID, want)
+		}
+	}
+
+	for _, agentID := range []string{"agent-z", "agent-a", "agent-m"} {
+		if err := backend.RegisterAgent(ctx, registry.Agent{ID: agentID}, "relay-a"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agents, err := backend.ListAgents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAgents, err := backend.ListRelayAgents(ctx, "relay-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"agent-a", "agent-m", "agent-z"} {
+		if agents[i].ID != want {
+			t.Fatalf("agent[%d].ID = %q, want %q", i, agents[i].ID, want)
+		}
+		if relayAgents[i].ID != want {
+			t.Fatalf("relay agent[%d].ID = %q, want %q", i, relayAgents[i].ID, want)
+		}
 	}
 }
 

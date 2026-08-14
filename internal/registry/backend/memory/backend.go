@@ -3,6 +3,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -168,6 +169,9 @@ func (b *Backend) ListRelays(ctx context.Context) ([]registry.Relay, error) {
 		entry.mu.Unlock()
 		relays = append(relays, relay)
 	}
+	sort.Slice(relays, func(i, j int) bool {
+		return relays[i].ID < relays[j].ID
+	})
 
 	return relays, nil
 }
@@ -195,6 +199,14 @@ func (b *Backend) RemoveRelay(ctx context.Context, relayID string) error {
 
 	if _, exists := b.relays[relayID]; !exists {
 		return errRelayNotRegistered
+	}
+	for agentID := range b.relayAgents[relayID] {
+		placement, placed := b.placements[agentID]
+		if !placed || placement.RelayID != relayID {
+			continue
+		}
+		delete(b.placements, agentID)
+		delete(b.agents, agentID)
 	}
 	delete(b.relays, relayID)
 	delete(b.relayAgents, relayID)
@@ -371,6 +383,9 @@ func (b *Backend) ListAgents(ctx context.Context) ([]registry.Agent, error) {
 
 		agents[i] = agent
 	}
+	sort.Slice(agents, func(i, j int) bool {
+		return agents[i].ID < agents[j].ID
+	})
 
 	return agents, nil
 }
@@ -414,6 +429,9 @@ func (b *Backend) ListRelayAgents(ctx context.Context, relayID string) ([]*regis
 
 		agents = append(agents, &agentCopy)
 	}
+	sort.Slice(agents, func(i, j int) bool {
+		return agents[i].ID < agents[j].ID
+	})
 
 	return agents, nil
 }
