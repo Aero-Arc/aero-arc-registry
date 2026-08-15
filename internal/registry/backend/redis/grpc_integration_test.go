@@ -12,11 +12,14 @@ import (
 
 	"github.com/Aero-Arc/aero-arc-registry/internal/registry"
 	registrygrpc "github.com/Aero-Arc/aero-arc-registry/internal/transport/grpc"
+	conformancev1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/conformance/v1"
 	registryv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/registry/v1"
 	gogrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // TestRegistryGRPCWithRedis exercises the complete in-repository production
@@ -38,7 +41,7 @@ func TestRegistryGRPCWithRedis(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	listenPort := listener.Addr().(*net.TCPAddr).Port
-	ttl := registry.TTLConfig{Relay: 2 * time.Second, Agent: 2 * time.Second}
+	ttl := registry.TTLConfig{Relay: 2 * time.Second, Agent: 2 * time.Second, Conformance: time.Second, ConformanceFence: time.Minute}
 	redisConfig := &registry.RedisConfig{Address: redisHost, Port: redisPort}
 	backend, err := New(redisConfig, ttl)
 	if err != nil {
@@ -74,6 +77,33 @@ func TestRegistryGRPCWithRedis(t *testing.T) {
 	client := registryv1.NewAeroRegistryClient(connection)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	summary := &conformancev1.ConformanceSummary{
+		AssignmentId: "assignment-integration", AssignmentGeneration: 4, EvaluationRevision: 9,
+		EvaluationId: "registry:assignment-integration:4:9", AircraftId: "aircraft-1", FlightId: "flight-1",
+		IntentId: "intent-1", IntentVersion: 1,
+		Condition:        conformancev1.ConformanceCondition_CONFORMANCE_CONDITION_NON_CONFORMING,
+		MonitoringStatus: conformancev1.MonitoringStatus_MONITORING_STATUS_CURRENT,
+		RecordingStatus:  conformancev1.RecordingStatus_RECORDING_STATUS_CONFIRMED,
+		ObservedAt:       timestamppb.Now(), FrameId: "frame-9",
+	}
+	published, err := client.PublishConformanceSummary(ctx, &registryv1.PublishConformanceSummaryRequest{Summary: summary})
+	if err != nil || published.GetDisposition() != registryv1.ConformancePublishDisposition_CONFORMANCE_PUBLISH_DISPOSITION_APPLIED {
+		t.Fatalf("PublishConformanceSummary() = %+v, error = %v", published, err)
+	}
+	readSummary, err := client.GetConformanceSummary(ctx, &registryv1.GetConformanceSummaryRequest{AssignmentId: summary.GetAssignmentId()})
+	if err != nil || readSummary.GetProjection().GetSummary().GetEvaluationRevision() != summary.GetEvaluationRevision() {
+		t.Fatalf("GetConformanceSummary() = %+v, error = %v", readSummary, err)
+	}
+	batch, err := client.BatchGetConformanceSummaries(ctx, &registryv1.BatchGetConformanceSummariesRequest{AssignmentIds: []string{summary.GetAssignmentId(), "missing"}})
+	if err != nil || len(batch.GetProjections()) != 1 || len(batch.GetMissingAssignmentIds()) != 1 {
+		t.Fatalf("BatchGetConformanceSummaries() = %+v, error = %v", batch, err)
+	}
+	staleSummary := proto.Clone(summary).(*conformancev1.ConformanceSummary)
+	staleSummary.EvaluationRevision--
+	if _, err := client.PublishConformanceSummary(ctx, &registryv1.PublishConformanceSummaryRequest{Summary: staleSummary}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("stale PublishConformanceSummary() error = %v", err)
+	}
 
 	for _, relay := range []*registryv1.Relay{
 		{RelayId: "relay-a", Address: "relay-a.internal", GrpcPort: 50051},

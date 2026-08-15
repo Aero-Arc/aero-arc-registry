@@ -3,6 +3,10 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -16,13 +20,23 @@ type Backend struct {
 	agents      map[string]*agentEntry
 	placements  map[string]*registry.AgentPlacement
 	relayAgents map[string]map[string]*agentEntry
+	conformance map[string]registry.ConformanceProjection
+	fences      map[string]conformanceFence
 
 	// Lock order: relayMu -> agentMu -> entry.mu
 	// - relays map guarded by relayMu
 	// - agents/placements guarded by agentMu
 	// - individual relay/agent fields guarded by entry.mu
-	relayMu sync.RWMutex
-	agentMu sync.RWMutex
+	relayMu       sync.RWMutex
+	agentMu       sync.RWMutex
+	conformanceMu sync.Mutex
+}
+
+type conformanceFence struct {
+	generation uint64
+	revision   uint64
+	digest     string
+	expiresAt  time.Time
 }
 
 type relayEntry struct {
@@ -50,7 +64,127 @@ func New(cfg *registry.MemoryConfig) (*Backend, error) {
 		agents:      make(map[string]*agentEntry),
 		placements:  make(map[string]*registry.AgentPlacement),
 		relayAgents: make(map[string]map[string]*agentEntry),
+		conformance: make(map[string]registry.ConformanceProjection),
+		fences:      make(map[string]conformanceFence),
 	}, nil
+}
+
+// PublishConformanceSummary atomically compares the independent assignment and
+// evaluation fences and stores a short-lived projection using the process clock.
+//
+// Parameters:
+//   - ctx: controls cancellation before the in-memory mutation.
+//   - summary: is the immutable current evaluation projection.
+//   - projectionTTL: controls current-state visibility.
+//   - fenceTTL: retains the cursor after projection expiry and must be longer.
+//
+// Returns:
+//   - projection: contains memory-backend receipt and expiry timestamps.
+//   - disposition: is applied for an advancing cursor or idempotent for an exact retry.
+//   - error: wraps ErrStale or ErrConflict when the fence rejects publication.
+func (b *Backend) PublishConformanceSummary(ctx context.Context, summary registry.ConformanceSummary, projectionTTL, fenceTTL time.Duration) (registry.ConformanceProjection, registry.PublishDisposition, error) {
+	select {
+	case <-ctx.Done():
+		return registry.ConformanceProjection{}, "", ctx.Err()
+	default:
+	}
+	payload, err := json.Marshal(summary)
+	if err != nil {
+		return registry.ConformanceProjection{}, "", fmt.Errorf("encode conformance summary: %w", err)
+	}
+	hash := sha256.Sum256(payload)
+	digest := hex.EncodeToString(hash[:])
+	now := time.Now().UTC()
+
+	b.conformanceMu.Lock()
+	defer b.conformanceMu.Unlock()
+	fence, exists := b.fences[summary.AssignmentID]
+	if exists && !fence.expiresAt.After(now) {
+		delete(b.fences, summary.AssignmentID)
+		exists = false
+	}
+	disposition := registry.PublishApplied
+	if exists {
+		switch {
+		case summary.AssignmentGeneration < fence.generation,
+			summary.AssignmentGeneration == fence.generation && summary.EvaluationRevision < fence.revision:
+			return registry.ConformanceProjection{}, "", fmt.Errorf("conformance cursor is older than the Registry fence: %w", registry.ErrStale)
+		case summary.AssignmentGeneration == fence.generation && summary.EvaluationRevision == fence.revision:
+			if digest != fence.digest {
+				return registry.ConformanceProjection{}, "", fmt.Errorf("conformance cursor content changed: %w", registry.ErrConflict)
+			}
+			disposition = registry.PublishIdempotent
+		}
+	}
+	projection := registry.ConformanceProjection{Summary: cloneSummary(summary), StoredAt: now, ExpiresAt: now.Add(projectionTTL)}
+	b.conformance[summary.AssignmentID] = projection
+	b.fences[summary.AssignmentID] = conformanceFence{generation: summary.AssignmentGeneration, revision: summary.EvaluationRevision, digest: digest, expiresAt: now.Add(fenceTTL)}
+	return cloneProjection(projection), disposition, nil
+}
+
+// GetConformanceSummary returns one non-expired in-memory projection.
+//
+// Parameters:
+//   - ctx: controls cancellation before lookup.
+//   - assignmentID: identifies the logical assignment.
+//
+// Returns:
+//   - projection: is a defensive copy of current state.
+//   - error: wraps ErrNotFound when absent or expired.
+func (b *Backend) GetConformanceSummary(ctx context.Context, assignmentID string) (registry.ConformanceProjection, error) {
+	projections, missing, err := b.BatchGetConformanceSummaries(ctx, []string{assignmentID})
+	if err != nil {
+		return registry.ConformanceProjection{}, err
+	}
+	if len(missing) != 0 {
+		return registry.ConformanceProjection{}, fmt.Errorf("conformance summary %q: %w", assignmentID, registry.ErrNotFound)
+	}
+	return projections[0], nil
+}
+
+// BatchGetConformanceSummaries returns defensive copies of live projections
+// and separately identifies absent or expired assignments.
+//
+// Parameters:
+//   - ctx: controls cancellation before lookup.
+//   - assignmentIDs: must already be unique and deterministically ordered.
+//
+// Returns:
+//   - projections: contains live values in input order.
+//   - missing: contains absent or expired IDs in input order.
+//   - error: reports context cancellation.
+func (b *Backend) BatchGetConformanceSummaries(ctx context.Context, assignmentIDs []string) ([]registry.ConformanceProjection, []string, error) {
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	default:
+	}
+	now := time.Now().UTC()
+	b.conformanceMu.Lock()
+	defer b.conformanceMu.Unlock()
+	projections := make([]registry.ConformanceProjection, 0, len(assignmentIDs))
+	missing := make([]string, 0)
+	for _, assignmentID := range assignmentIDs {
+		projection, exists := b.conformance[assignmentID]
+		if !exists || !projection.ExpiresAt.After(now) {
+			delete(b.conformance, assignmentID)
+			missing = append(missing, assignmentID)
+			continue
+		}
+		projections = append(projections, cloneProjection(projection))
+	}
+	return projections, missing, nil
+}
+
+func cloneSummary(summary registry.ConformanceSummary) registry.ConformanceSummary {
+	result := summary
+	result.Violations = append([]registry.ViolationSummary(nil), summary.Violations...)
+	return result
+}
+
+func cloneProjection(projection registry.ConformanceProjection) registry.ConformanceProjection {
+	projection.Summary = cloneSummary(projection.Summary)
+	return projection
 }
 
 // RegisterRelay registers the supplied Backend identity or handler.

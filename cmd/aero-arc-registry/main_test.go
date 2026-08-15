@@ -23,6 +23,8 @@ func TestBuildConfigFromCLI(t *testing.T) {
 		_ = cmd.Set(GRPCListenPortFlag, "50055")
 		_ = cmd.Set(RelayTTLFlag, "45s")
 		_ = cmd.Set(AgentTTLFlag, "15s")
+		_ = cmd.Set(ConformanceTTLFlag, "10s")
+		_ = cmd.Set(ConformanceFenceTTLFlag, "1h")
 
 		cfg, err := buildConfigFromCLI(cmd)
 		if err != nil {
@@ -34,7 +36,7 @@ func TestBuildConfigFromCLI(t *testing.T) {
 		if cfg.GRPC.ListenAddress != "127.0.0.1" || cfg.GRPC.ListenPort != 50055 {
 			t.Fatalf("unexpected grpc config: %+v", cfg.GRPC)
 		}
-		if cfg.TTL.Relay != 45*time.Second || cfg.TTL.Agent != 15*time.Second {
+		if cfg.TTL.Relay != 45*time.Second || cfg.TTL.Agent != 15*time.Second || cfg.TTL.Conformance != 10*time.Second || cfg.TTL.ConformanceFence != time.Hour {
 			t.Fatalf("unexpected ttl config: %+v", cfg.TTL)
 		}
 	})
@@ -191,6 +193,8 @@ func newTestCLICommand() *cli.Command {
 			&cli.StringFlag{Name: TLSCertPathFlag, Value: "/tmp/test.crt"},
 			&cli.DurationFlag{Name: RelayTTLFlag, Value: 30 * time.Second},
 			&cli.DurationFlag{Name: AgentTTLFlag, Value: 30 * time.Second},
+			&cli.DurationFlag{Name: ConformanceTTLFlag, Value: 15 * time.Second},
+			&cli.DurationFlag{Name: ConformanceFenceTTLFlag, Value: 24 * time.Hour},
 			&cli.StringFlag{Name: RedisAddrFlag, Value: "localhost"},
 			&cli.IntFlag{Name: RedisPortFlag, Value: 6379},
 			&cli.StringFlag{Name: RedisUsernameFlag, Value: "default"},

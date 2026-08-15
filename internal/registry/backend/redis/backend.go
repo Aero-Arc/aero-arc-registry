@@ -45,6 +45,7 @@ func New(cfg *registry.RedisConfig, ttl registry.TTLConfig) (*Backend, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("redis config invalid: %w", err)
 	}
+	ttl = ttl.WithDefaults()
 	if err := ttl.Validate(); err != nil {
 		return nil, fmt.Errorf("redis ttl config invalid: %w", err)
 	}
@@ -53,6 +54,9 @@ func New(cfg *registry.RedisConfig, ttl registry.TTLConfig) (*Backend, error) {
 	}
 	if ttl.Relay < time.Millisecond {
 		return nil, fmt.Errorf("redis relay ttl must be at least %s (got %s)", time.Millisecond, ttl.Relay)
+	}
+	if ttl.Conformance < time.Millisecond {
+		return nil, fmt.Errorf("redis conformance ttl must be at least %s (got %s)", time.Millisecond, ttl.Conformance)
 	}
 
 	client := redisclient.NewClient(&redisclient.Options{

@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+const (
+	defaultConformanceTTL      = 15 * time.Second
+	defaultConformanceFenceTTL = 24 * time.Hour
+)
+
 // Config defines the runtime configuration for the Aero Arc Registry service.
 // It captures transport configuration (gRPC), backend coordination configuration,
 // and liveness semantics (TTL) in a backend-agnostic way.
@@ -57,10 +62,33 @@ type TTLConfig struct {
 	// heartbeat before an agent is considered unhealthy.
 	Agent time.Duration
 
+	// Conformance defines how long a live summary remains readable without a
+	// successful refresh from Conformance.
+	Conformance time.Duration
+
+	// ConformanceFence retains the latest assignment generation and evaluation
+	// revision after the live summary expires, preventing stale resurrection.
+	ConformanceFence time.Duration
+
 	// TODO(registry-ttl): add optional stale grace period to support soft TTL
 	// lifecycle (ACTIVE -> STALE -> DELETING) before hard removal.
 	// TODO(registry-ttl): add configurable TTL sweep interval independent of TTL
 	// values for adaptive/backpressure-aware scheduler evolution.
+}
+
+// WithDefaults returns a copy with backward-compatible Conformance TTL values
+// filled when older callers omit the newly added fields.
+//
+// Returns:
+//   - result: preserves explicit TTLs and supplies safe projection defaults.
+func (t TTLConfig) WithDefaults() TTLConfig {
+	if t.Conformance == 0 {
+		t.Conformance = defaultConformanceTTL
+	}
+	if t.ConformanceFence == 0 {
+		t.ConformanceFence = defaultConformanceFenceTTL
+	}
+	return t
 }
 
 // BackendConfig defines which registry backend implementation is used
@@ -243,12 +271,19 @@ func (g *GRPCConfig) Validate() error {
 // Returns:
 //   - error: reports validation, dependency, cancellation, or persistence failures.
 func (t *TTLConfig) Validate() error {
-	if t.Agent <= 0 {
+	normalized := t.WithDefaults()
+	if normalized.Agent <= 0 {
 		return ErrTTLAgentInvalid
 	}
 
-	if t.Relay <= 0 {
+	if normalized.Relay <= 0 {
 		return ErrTTLRelayInvalid
+	}
+	if normalized.Conformance <= 0 {
+		return ErrTTLConformanceInvalid
+	}
+	if normalized.ConformanceFence <= normalized.Conformance {
+		return ErrTTLConformanceFenceInvalid
 	}
 
 	return nil

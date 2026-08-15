@@ -27,8 +27,10 @@ func buildConfigFromCLI(cmd *cli.Command) (*registry.Config, error) {
 			},
 		},
 		TTL: registry.TTLConfig{
-			Relay: cmd.Duration(RelayTTLFlag),
-			Agent: cmd.Duration(AgentTTLFlag),
+			Relay:            cmd.Duration(RelayTTLFlag),
+			Agent:            cmd.Duration(AgentTTLFlag),
+			Conformance:      cmd.Duration(ConformanceTTLFlag),
+			ConformanceFence: cmd.Duration(ConformanceFenceTTLFlag),
 		},
 	}
 
