@@ -350,6 +350,10 @@ func toStatusError(err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, registry.ErrConflict):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, registry.ErrStale):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, registry.ErrNotImplemented):
+		return status.Error(codes.Unimplemented, err.Error())
 	default:
 		slog.Error("unclassified error", "err", err)
 		return status.Error(codes.Internal, "internal error")

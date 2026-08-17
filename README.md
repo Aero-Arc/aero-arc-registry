@@ -1,7 +1,7 @@
 # Aero Arc Relay Registry
 
 ## Overview
-The Aero Arc Relay Registry is a control-plane gRPC service for coordinating live Aero Arc Relay instances and their agent ownership. It provides a single, backend-agnostic source of current routing metadata so API servers and operator dashboards can make decisions without coupling to any specific storage system.
+The Aero Arc Relay Registry is a control-plane gRPC service for coordinating live Aero Arc Relay instances, their agent ownership, and expiring Conformance projections. It provides a single, backend-agnostic source of current routing metadata so API servers and operator dashboards can make decisions without coupling to any specific storage system.
 
 This solves the problem of keeping relay liveness and agent ownership visible and consistent enough for routing, while remaining replaceable and tolerant of backend failures.
 
@@ -30,6 +30,13 @@ In the broader Aero Arc system, the registry sits between relays/agents and cont
 - Register and renew relay liveness (TTL-based).
 - Register and renew agent-to-relay ownership (TTL-based).
 - Query current relay and ownership state for routing and operator views.
+- Publish a generation/revision-fenced Conformance summary with a short TTL.
+- Read one or batch-read up to 250 current Conformance summaries for API composition.
+
+Conformance publication is unary rather than streaming. Registry retains a
+separate, configurable cursor fence after a summary expires so a delayed older
+worker cannot revive stale live state. API servers may batch-poll these values
+and fan them out to browser sockets; Registry does not manage subscribers.
 
 ## Status / Roadmap
 - The in-memory backend is intended for local development and tests.
@@ -47,7 +54,9 @@ go run ./cmd/aero-arc-registry \
   --redis-addr 127.0.0.1 \
   --redis-port 6379 \
   --relay-ttl 30s \
-  --agent-ttl 30s
+  --agent-ttl 30s \
+  --conformance-ttl 15s \
+  --conformance-fence-ttl 24h
 ```
 
 Authentication is configured with `--redis-user` and `--redis-password`; select a logical database with `--redis-db`. Redis connections are established lazily, so a connection or authentication failure is returned by the first registry operation.

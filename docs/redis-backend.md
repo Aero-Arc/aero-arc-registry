@@ -61,6 +61,19 @@ To keep atomic execution safe and reviewable:
 
 All keys use the versioned `{aero-arc-registry}:v1:` namespace. Entity IDs are URL-safe base64 encoded in key names.
 
+Current Conformance state uses two keys per logical assignment:
+
+- `conformance-summary:<base64url assignment ID>` stores the JSON projection,
+  Registry receipt time, and expiry time for the short live-state TTL.
+- `conformance-fence:<base64url assignment ID>` stores zero-padded assignment
+  generation, evaluation revision, and content digest for the longer fence TTL.
+
+`publish_conformance.lua` compares generation before revision, rejects lower
+cursors, treats exact content retries as idempotent, and rejects changed content
+at the same cursor. Zero-padded decimal strings avoid Lua floating-point loss
+for `uint64` fences. The fence intentionally outlives the projection so expiry
+cannot permit stale state resurrection.
+
 ![Redis key model showing TTL-backed relay and agent hashes, expiry-scored indexes, and the relay incarnation sequence](images/redis-key-model.svg)
 
 The namespace contains a Redis hash tag so related keys share a slot. The current client targets a standalone Redis deployment; Redis Cluster is not yet a supported configuration.

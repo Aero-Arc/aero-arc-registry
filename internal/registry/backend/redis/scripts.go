@@ -56,4 +56,7 @@ var (
 	readRelayAgentScript = newRedisScript("read_relay_agent.lua", agentValidationLua)
 	removeAgentsScript   = newRedisScript("remove_agents.lua", entityValidationLua)
 	activeIndexScript    = newRedisScript("active_index.lua", redisTimeLua)
+
+	publishConformanceScript = newRedisScript("publish_conformance.lua", redisTimeLua)
+	readConformanceScript    = newRedisScript("read_conformance.lua")
 )

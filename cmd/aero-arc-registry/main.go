@@ -65,6 +65,16 @@ var registryCmd = cli.Command{
 			Value: time.Second * 30,
 		},
 		&cli.DurationFlag{
+			Name:  ConformanceTTLFlag,
+			Usage: "ttl for current conformance summaries",
+			Value: 15 * time.Second,
+		},
+		&cli.DurationFlag{
+			Name:  ConformanceFenceTTLFlag,
+			Usage: "ttl for conformance generation and revision fences",
+			Value: 24 * time.Hour,
+		},
+		&cli.DurationFlag{
 			Name:  HeartbeatIntervalFlag,
 			Usage: "expected relay heartbeat interval",
 			Value: time.Second,

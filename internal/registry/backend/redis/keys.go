@@ -16,6 +16,12 @@ func (b *Backend) relayAgentsKey(id string) string {
 func (b *Backend) relayKeyPrefix() string       { return b.namespace + "relay:" }
 func (b *Backend) relayAgentsKeyPrefix() string { return b.namespace + "relay-agents:" }
 func (b *Backend) relayIncarnationKey() string  { return b.namespace + "relay-incarnation-sequence" }
+func (b *Backend) conformanceSummaryKey(id string) string {
+	return b.namespace + "conformance-summary:" + encodeID(id)
+}
+func (b *Backend) conformanceFenceKey(id string) string {
+	return b.namespace + "conformance-fence:" + encodeID(id)
+}
 
 func encodeID(id string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(id))

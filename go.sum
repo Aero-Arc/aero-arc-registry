@@ -8,6 +8,8 @@ github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERo
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/aero-arc/aero-arc-protos v0.0.0-20260812020348-1f8a6730b3ee h1:NX2tsjSjrrUVPvH43fbyq9TAxUdMiqDVykkc7UaKTlo=
 github.com/aero-arc/aero-arc-protos v0.0.0-20260812020348-1f8a6730b3ee/go.mod h1:fILW3Dz6auXllS5ABRFTt0FTnNC4Mtw3ukvGrJa7zLo=
+github.com/aero-arc/aero-arc-protos v0.0.0-20260815182056-d2fc8f97f2a8 h1:UPinT/IKVnlygtpMB+/awLzgoJGsid34JnT47Jgt3nY=
+github.com/aero-arc/aero-arc-protos v0.0.0-20260815182056-d2fc8f97f2a8/go.mod h1:fILW3Dz6auXllS5ABRFTt0FTnNC4Mtw3ukvGrJa7zLo=
 github.com/alicebob/miniredis/v2 v2.35.0 h1:QwLphYqCEAo1eu1TqPRN2jgVMPBweeQcR21jeqDCONI=
 github.com/alicebob/miniredis/v2 v2.35.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=

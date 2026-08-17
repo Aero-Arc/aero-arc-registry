@@ -25,8 +25,12 @@ package registry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math"
 	"math/rand/v2"
+	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -56,12 +60,14 @@ func New(cfg *Config, backend Backend) (*Registry, error) {
 		return nil, ErrNilConfig
 	}
 
-	if err := cfg.Validate(); err != nil {
+	normalized := *cfg
+	normalized.TTL = normalized.TTL.WithDefaults()
+	if err := normalized.Validate(); err != nil {
 		return nil, err
 	}
 
 	aeroRegistry := &Registry{
-		cfg:     cfg,
+		cfg:     &normalized,
 		backend: backend,
 	}
 
@@ -199,6 +205,105 @@ func (r *Registry) ListRelayAgents(ctx context.Context, relayID string) ([]*Agen
 //   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Registry) RemoveAgents(ctx context.Context, agentIDs []string) error {
 	return r.backend.RemoveAgents(ctx, agentIDs)
+}
+
+// PublishConformanceSummary validates and atomically publishes a current live
+// projection behind independent assignment-generation and evaluation-revision
+// fences. The backend owns receipt time and TTL enforcement.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - summary: contains the current authoritative assignment evaluation.
+//
+// Returns:
+//   - projection: contains Registry-owned storage and expiry timestamps.
+//   - disposition: distinguishes an advancing publication from an exact retry.
+//   - error: reports invalid input, stale/conflicting fences, or backend failure.
+func (r *Registry) PublishConformanceSummary(ctx context.Context, summary ConformanceSummary) (ConformanceProjection, PublishDisposition, error) {
+	if err := validateConformanceSummary(summary); err != nil {
+		return ConformanceProjection{}, "", err
+	}
+	backend, ok := r.backend.(ConformanceBackend)
+	if !ok {
+		return ConformanceProjection{}, "", ErrNotImplemented
+	}
+	return backend.PublishConformanceSummary(ctx, summary, r.cfg.TTL.Conformance, r.cfg.TTL.ConformanceFence)
+}
+
+// GetConformanceSummary returns one non-expired current projection.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - assignmentID: identifies the logical assignment independently of generation.
+//
+// Returns:
+//   - projection: is the newest live summary accepted for the assignment.
+//   - error: wraps ErrNotFound after expiry and reports backend failures.
+func (r *Registry) GetConformanceSummary(ctx context.Context, assignmentID string) (ConformanceProjection, error) {
+	if strings.TrimSpace(assignmentID) == "" {
+		return ConformanceProjection{}, fmt.Errorf("assignment ID is required: %w", ErrInvalid)
+	}
+	backend, ok := r.backend.(ConformanceBackend)
+	if !ok {
+		return ConformanceProjection{}, ErrNotImplemented
+	}
+	return backend.GetConformanceSummary(ctx, assignmentID)
+}
+
+// BatchGetConformanceSummaries returns live projections in deterministic
+// assignment-ID order and separately reports requested IDs that are absent or
+// expired. Duplicate IDs are collapsed and a request is capped at 250 IDs.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - assignmentIDs: selects logical assignments independently of generation.
+//
+// Returns:
+//   - projections: contains every live requested projection in ID order.
+//   - missing: contains absent or expired IDs in deterministic order.
+//   - error: reports invalid input or backend failure.
+func (r *Registry) BatchGetConformanceSummaries(ctx context.Context, assignmentIDs []string) ([]ConformanceProjection, []string, error) {
+	if len(assignmentIDs) == 0 || len(assignmentIDs) > 250 {
+		return nil, nil, fmt.Errorf("one to 250 assignment IDs are required: %w", ErrInvalid)
+	}
+	unique := make(map[string]struct{}, len(assignmentIDs))
+	for _, assignmentID := range assignmentIDs {
+		assignmentID = strings.TrimSpace(assignmentID)
+		if assignmentID == "" {
+			return nil, nil, fmt.Errorf("assignment IDs cannot be empty: %w", ErrInvalid)
+		}
+		unique[assignmentID] = struct{}{}
+	}
+	ids := make([]string, 0, len(unique))
+	for assignmentID := range unique {
+		ids = append(ids, assignmentID)
+	}
+	sort.Strings(ids)
+	backend, ok := r.backend.(ConformanceBackend)
+	if !ok {
+		return nil, nil, ErrNotImplemented
+	}
+	return backend.BatchGetConformanceSummaries(ctx, ids)
+}
+
+func validateConformanceSummary(summary ConformanceSummary) error {
+	if strings.TrimSpace(summary.AssignmentID) == "" || summary.AssignmentGeneration == 0 || summary.EvaluationRevision == 0 || strings.TrimSpace(summary.EvaluationID) == "" || strings.TrimSpace(summary.AircraftID) == "" || strings.TrimSpace(summary.FlightID) == "" || strings.TrimSpace(summary.IntentID) == "" || summary.IntentVersion == 0 || summary.ObservedAt.IsZero() || strings.TrimSpace(summary.FrameID) == "" {
+		return fmt.Errorf("conformance summary identity and cursor are required: %w", ErrInvalid)
+	}
+	if summary.Condition == "" || summary.MonitoringStatus == "" || summary.RecordingStatus == "" {
+		return fmt.Errorf("conformance status axes are required: %w", ErrInvalid)
+	}
+	seen := make(map[string]struct{}, len(summary.Violations))
+	for _, violation := range summary.Violations {
+		if violation.ViolationType == "" || violation.Phase == "" || math.IsNaN(violation.WorstDeviation) || math.IsInf(violation.WorstDeviation, 0) || violation.WorstDeviation < 0 {
+			return fmt.Errorf("conformance violation is invalid: %w", ErrInvalid)
+		}
+		if _, exists := seen[violation.ViolationType]; exists {
+			return fmt.Errorf("duplicate conformance violation %q: %w", violation.ViolationType, ErrInvalid)
+		}
+		seen[violation.ViolationType] = struct{}{}
+	}
+	return nil
 }
 
 // RunTTL starts the service-side expiry sweeper when the backend does not own

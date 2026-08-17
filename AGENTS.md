@@ -2,7 +2,9 @@
 
 ## Scope
 
-This service is the gRPC-only control plane for current relay liveness and agent-to-relay placement. It never forwards telemetry or other data-plane traffic and does not store history.
+This service is the gRPC-only control plane for current relay liveness,
+agent-to-relay placement, and expiring live Conformance projections. It never
+forwards telemetry or other data-plane traffic and does not store history.
 
 ## Invariants
 
@@ -16,6 +18,11 @@ This service is the gRPC-only control plane for current relay liveness and agent
   and are embedded by `scripts.go`. Every program documents its ordered
   `KEYS`/`ARGV` contract; update that contract and its Go call site together.
 - Lists must omit expired/partially deleted records and return deterministic ID order.
+- Conformance publication compares assignment generation before evaluation
+  revision. Exact content retries are idempotent, same-cursor conflicts are
+  rejected, and a longer cursor fence survives the short projection TTL.
+- Conformance read APIs expose current state only. Keep fan-out, subscriptions,
+  browser sockets, incident history, and durable replay outside Registry.
 - Relay-owned agent heartbeat rollout is ordered: publish Protos, deploy Relay while the old Registry ignores the new `relay_id`, then deploy the strict Registry. Once strict Registry is live, rolling Relay back alone causes agent heartbeats to be rejected; restore Relay or roll Registry back with it.
 
 ## Development

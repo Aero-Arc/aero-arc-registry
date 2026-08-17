@@ -33,6 +33,15 @@ type Backend interface {
 	Close(ctx context.Context) error
 }
 
+// ConformanceBackend is the optional backend capability for fenced, TTL-scoped
+// current Conformance projections. Backends that do not implement it return an
+// Unimplemented transport status without weakening their existing contracts.
+type ConformanceBackend interface {
+	PublishConformanceSummary(ctx context.Context, summary ConformanceSummary, projectionTTL, fenceTTL time.Duration) (ConformanceProjection, PublishDisposition, error)
+	GetConformanceSummary(ctx context.Context, assignmentID string) (ConformanceProjection, error)
+	BatchGetConformanceSummaries(ctx context.Context, assignmentIDs []string) ([]ConformanceProjection, []string, error)
+}
+
 // TTLManagedBackend is an optional backend capability indicating that entity
 // expiry is enforced atomically by the backend using its own clock. The
 // registry service must not apply its local-clock TTL sweep to these backends.
@@ -59,4 +68,51 @@ type AgentPlacement struct {
 	AgentID   string
 	RelayID   string
 	UpdatedAt time.Time
+}
+
+// PublishDisposition describes whether a Registry publication advanced the
+// assignment fence or repeated the exact current evaluation.
+type PublishDisposition string
+
+const (
+	PublishApplied    PublishDisposition = "applied"
+	PublishIdempotent PublishDisposition = "idempotent"
+)
+
+// ConformanceSummary is one replaceable live-state projection. Assignment
+// generation and evaluation revision are independent monotonic fences.
+type ConformanceSummary struct {
+	AssignmentID         string
+	AssignmentGeneration uint64
+	EvaluationRevision   uint64
+	EvaluationID         string
+	OperatorID           string
+	AircraftID           string
+	FlightID             string
+	IntentID             string
+	IntentVersion        uint32
+	Condition            string
+	MonitoringStatus     string
+	RecordingStatus      string
+	ObservedAt           time.Time
+	FrameID              string
+	Violations           []ViolationSummary
+}
+
+// ViolationSummary is current hysteresis state for one violation axis.
+type ViolationSummary struct {
+	ViolationType  string
+	Phase          string
+	OpeningFrameID string
+	OpenedAt       time.Time
+	LastObservedAt time.Time
+	WorstDeviation float64
+}
+
+// ConformanceProjection adds Registry-owned receipt and expiry timestamps to a
+// current Conformance summary.
+type ConformanceProjection struct {
+	Summary   ConformanceSummary
+	StoredAt  time.Time
+	ExpiresAt time.Time
 }
